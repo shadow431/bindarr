@@ -37,7 +37,7 @@
 // the join silently misses. Decomposing first makes both "pokemongo".
 const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-const normId = (s) => fold(s).toLowerCase().replace(/^mtg-/, '').replace(/[^a-z0-9]/g, '');
+const normId = (s) => fold(s).toLowerCase().replace(/^mtg-|^lorcana-/, '').replace(/[^a-z0-9]/g, '');
 
 // Only zeros sitting between a letter and a digit — see the note above.
 const unpadId = (s) => normId(s).replace(/([a-z])0+(\d)/g, '$1$2');

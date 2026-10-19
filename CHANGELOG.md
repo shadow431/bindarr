@@ -7,6 +7,7 @@ release also carries fuller notes on its
 ## [Unreleased]
 
 ### Added
+- **Sealed product inventory and value tracking.** Record purchases from the TCGplayer catalog or by name, track individual units as sealed or opened, define reusable product contents, and create guaranteed cards or child products when a unit is opened. Link collection cards to the opened unit they came from, filter the collection by link, and track the current per-unit market value separately from purchase cost. Catalog-linked products can refresh value from TCGCSV; uncatalogued products can use a manually entered value.
 - **Camera zoom in the scanner.** Scan settings gain a zoom slider when the camera reports zoom support (`MediaStreamTrack.getCapabilities().zoom`, e.g. Android Chrome). It is hardware zoom, so the guide-box crop gets more real pixels, and the level is remembered for the next session, which suits a phone mounted over the cards ([#61](https://github.com/thenotoriousJeremy/bindarr/issues/61)).
 - **Insert and reorder binder pages in place, and move a page to another binder.** A new page can be added before or after an existing one instead of always landing at the end, and an existing page can be moved to a different binder outright. The destination is checked against that binder's filing rules first, and the move is rejected with a clear error naming the cards that don't fit rather than moving anyway. Pages cannot be moved to or from a locked binder. Thanks [@shadow431](https://github.com/shadow431) ([#63](https://github.com/thenotoriousJeremy/bindarr/pull/63)).
 

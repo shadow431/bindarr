@@ -84,6 +84,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
   const [supertypeFilter, setSupertypeFilter] = useState([]);
   const [cmcFilter, setCmcFilter] = useState([]);
   const [languageFilter, setLanguageFilter] = useState([]);
+  const [sealedLinkFilter, setSealedLinkFilter] = useState([]);
   const [minPriceFilter, setMinPriceFilter] = useState('');
   const [maxPriceFilter, setMaxPriceFilter] = useState('');
   const [sortBy, setSortBy] = useState('added-newest');
@@ -100,6 +101,17 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
     selectMode, setSelectMode, selectedIds, setSelectedIds, toggleSelect, selectAt, clearSelection, exitSelectMode,
     bulkMoveTarget, setBulkMoveTarget, pressHandlers, longPressFired, runBulk,
   } = useMultiSelect({ showToast, onChanged: () => { onUpdate(); fetchCollection(); } });
+
+  // Opened, not-yet-linked sealed units, for the "link to sealed purchase" bulk
+  // action — only worth fetching once selection mode is actually in use.
+  const [sealedUnits, setSealedUnits] = useState([]);
+  useEffect(() => {
+    if (!selectMode) return;
+    fetch('/api/sealed/units?opened=1&unlinked=1')
+      .then(r => r.json())
+      .then(d => setSealedUnits(d.units || []))
+      .catch(() => {});
+  }, [selectMode]);
 
   useEffect(() => {
     fetchCollection();
@@ -226,6 +238,19 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
     () => Array.from(new Set(collection.map(item => item.cmc).filter(v => v !== null && v !== undefined))).sort((a, b) => a - b),
     [collection]
   );
+  const sealedUnitOptions = useMemo(() => {
+    const units = new Map();
+    collection.forEach(item => {
+      if (item.sealed_unit_id == null || units.has(item.sealed_unit_id)) return;
+      const details = [item.sealed_product_store, item.sealed_product_date, item.sealed_unit_number ? `Unit ${item.sealed_unit_number}` : null]
+        .filter(Boolean);
+      units.set(item.sealed_unit_id, {
+        value: item.sealed_unit_id,
+        label: `${item.sealed_product_name || 'Sealed product'}${details.length ? ` · ${details.join(' · ')}` : ''}`,
+      });
+    });
+    return Array.from(units.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [collection]);
 
   const activeFilterCount =
     [locationFilter, rarityFilter, conditionFilter, graderFilter, printingFilter,
@@ -234,6 +259,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
     + (gameFilter !== '' ? 1 : 0)
     + (minPriceFilter !== '' ? 1 : 0)
     + (maxPriceFilter !== '' ? 1 : 0)
+    + (sealedLinkFilter.length > 0 ? 1 : 0)
     + (tradeOnly ? 1 : 0)
     + (favoriteOnly ? 1 : 0);
 
@@ -243,6 +269,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
     setLocationFilter([]); setRarityFilter([]); setConditionFilter([]); setGraderFilter([]);
     setPrintingFilter([]); setSetFilter([]); setTypeFilter([]); setSupertypeFilter([]);
     setCmcFilter([]); setLanguageFilter([]);
+    setSealedLinkFilter([]);
     setMinPriceFilter(''); setMaxPriceFilter('');
     setTradeOnly(false); setFavoriteOnly(false);
   };
@@ -273,6 +300,10 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
       const matchesSupertype = supertypeFilter.length === 0 ? true : supertypeFilter.includes(item.supertype);
       const matchesCmc = cmcFilter.length === 0 ? true : cmcFilter.includes(String(item.cmc));
       const matchesLanguage = languageFilter.length === 0 ? true : languageFilter.includes(item.language);
+      const matchesSealedLink = sealedLinkFilter.length === 0 ||
+        (item.sealed_unit_id == null
+          ? sealedLinkFilter.includes('__unlinked')
+          : sealedLinkFilter.includes(item.sealed_unit_id));
       const matchesFavorite = favoriteOnly ? item.favorite === 1 : true;
       // Rows written before grading existed have a NULL grader, which means raw —
       // so the comparison defaults rather than treating NULL as its own category.
@@ -286,7 +317,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
 
       return matchesSearch && matchesGame && matchesLocation && matchesRarity && matchesCondition &&
              matchesPrinting && matchesSet && matchesType && matchesSupertype &&
-             matchesCmc && matchesLanguage && matchesFavorite && matchesGrader && matchesMinPrice && matchesMaxPrice;
+             matchesCmc && matchesLanguage && matchesSealedLink && matchesFavorite && matchesGrader && matchesMinPrice && matchesMaxPrice;
     });
 
     if (sortBy === 'qty-desc') {
@@ -295,7 +326,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
       sortCardsByOrder(result, SORT_CRITERIA[sortBy] || SORT_CRITERIA['added-newest'], undefined, setsList);
     }
     return result;
-  }, [collection, searchFilter, gameFilter, locationFilter, rarityFilter, conditionFilter, printingFilter, setFilter, typeFilter, supertypeFilter, cmcFilter, languageFilter, favoriteOnly, graderFilter, minPriceFilter, maxPriceFilter, sortBy, setsList]);
+  }, [collection, searchFilter, gameFilter, locationFilter, rarityFilter, conditionFilter, printingFilter, setFilter, typeFilter, supertypeFilter, cmcFilter, languageFilter, sealedLinkFilter, favoriteOnly, graderFilter, minPriceFilter, maxPriceFilter, sortBy, setsList]);
 
   // Group duplicate cards if stack option is active
   const processedCollection = useMemo(() => {
@@ -443,6 +474,19 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
                   options={[
                     { value: 'unassigned', label: t('bulk.unassignedPile') },
                     ...locations.map(loc => ({ value: loc.id, label: loc.name }))
+                  ]}
+                />
+              </Field>
+
+              <Field label={t('collection.fSealedLink')}>
+                <MultiSelectDropdown
+                  label={t('collection.fSealedLink')}
+                  allLabel={t('collection.allSealedLinks')}
+                  value={sealedLinkFilter}
+                  onChange={setSealedLinkFilter}
+                  options={[
+                    { value: '__unlinked', label: t('collection.notLinkedToSealed') },
+                    ...sealedUnitOptions,
                   ]}
                 />
               </Field>
@@ -639,6 +683,17 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
             showToast={showToast}
             onApplied={() => { clearSelection(); onUpdate(); fetchCollection(); }}
           />
+          <select className="select-control" value="" disabled={!selectedIds.size || !sealedUnits.length}
+            onChange={(e) => { if (e.target.value) runBulk('set_sealed_unit', e.target.value); e.target.value = ''; }}
+            style={{ fontSize: '0.72rem', maxWidth: '180px', padding: '0.3rem 0.4rem' }}>
+            <option value="">{t('bulk.linkSealedUnit')}</option>
+            {sealedUnits.map(u => (
+              <option key={u.id} value={u.id}>
+                {u.product_name}{u.store ? ` \u00b7 ${u.store}` : ''}{u.unit_price != null ? ` \u00b7 $${Number(u.unit_price).toFixed(2)}` : ''}
+                {u.expected_cards != null ? ` \u00b7 ${u.linked_cards}/${u.expected_cards} cards` : ''}
+              </option>
+            ))}
+          </select>
           <select className="select-control" value={bulkMoveTarget} onChange={(e) => setBulkMoveTarget(e.target.value)} style={{ fontSize: '0.72rem', maxWidth: '170px', padding: '0.3rem 0.4rem' }}>
             <option value="">{t('bulk.moveToContainer')}</option>
             <option value="unassign">{t('bulk.unassignedPile')}</option>
