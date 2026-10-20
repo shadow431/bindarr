@@ -1,10 +1,69 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { parseThirdPartyCSV } = require('../utils/csvMappers');
+const { parseThirdPartyCSV, parseManaboxText } = require('../utils/csvMappers');
+const scryfallApi = require('../scryfallApi');
+const lorcastApi = require('../lorcastApi');
 const { generateExportCSV } = require('../utils/csvExporters');
 const { resolveCardPrice } = require('../utils/priceHelpers');
 const { isBinderType } = require('../utils/compartmentSort');
+const cardApi = require('../utils/cardApi');
+const pokemonProvider = require('../utils/pokemonProvider');
+const languages = require('../utils/languages');
+const { matcher, normName } = require('../utils/setCatalogueMatch');
+
+// Turn an imported row into a card that is really in card_cache, or null.
+//
+// This used to mint an id from the row itself — `<set>-<number>`, or the name as
+// a slug when no set/number columns were found — and insert a placeholder
+// card_cache row with no image and the file's price. No provider ever saw it, so
+// the card showed blank art and $0.00 forever, and the TCGCSV sweep, which prices
+// by set and number, skipped it (#75). A row is now imported only when the
+// provider that minted its id, or the configured Pokémon provider by set and
+// number, actually has the card. A name alone is never enough: it names every
+// printing of the card.
+async function resolveImportedCard(item, user, setsFor) {
+  const game = item.game || 'pokemon';
+  const id = item.card_id || item.id;
+  if (id) {
+    if (await db.get(`SELECT id FROM card_cache WHERE id = ?`, [id])) return id;
+    const card = await cardApi.getCardById(id, { game, tcgApiKey: user.tcg_api_key }).catch(() => null);
+    if (card) return card.id;
+  }
+
+  const number = String(item.collector_number || item.number || '').split('/')[0].trim();
+  const set = item.set_code || item.set_id || item.set_name;
+  // MTG set+number rows were already asked of Scryfall in one batch (see the
+  // route); one that reaches here is a printing Scryfall does not have.
+  if (game === 'mtg' || !number || !set) return null;
+
+  if (game === 'lorcana') {
+    const { cards } = await lorcastApi.searchCards({ set, number, limit: 250 });
+    return pick(cards, item.name);
+  }
+
+  const lang = languages.toCode(item.language || 'English');
+  const api = await pokemonProvider.apiFor(lang);
+  // The file's set column, as the provider that will be asked numbers it: a
+  // pokemontcg.io export says sv1 where TCGdex says sv01, and many apps write the
+  // set NAME there instead of any code.
+  const setRow = (await setsFor(api, lang))(set, item.set_name || set);
+  if (!setRow) return null;
+  const { cards } = await api.searchCards({ set: setRow.id, number, lang, apiKey: user.tcg_api_key, limit: 250 });
+  return pick(cards, item.name);
+}
+
+// The one card a set+number search means: the only result, or the only one with
+// the row's name. Anything else is ambiguous and is not guessed at.
+function pick(cards = [], name) {
+  const named = cards.filter(c => normName(c.name) === normName(name));
+  const card = named.length === 1 ? named[0] : (cards.length === 1 ? cards[0] : null);
+  return card ? card.id : null;
+}
+
+// Rows that name the same printing are resolved once.
+const importKey = (item) => JSON.stringify([item.card_id || item.id, item.game, item.set_code || item.set_id,
+  item.set_name, item.collector_number || item.number, item.language, item.name]);
 
 // Export endpoint
 router.get('/export', async (req, res) => {
@@ -95,9 +154,28 @@ router.post('/import', async (req, res) => {
 
   try {
     let rawItems = [];
-
-    if (format.toLowerCase() === 'json') {
+    let unmatchedCount = 0;
+    const formatKey = format.toLowerCase();
+    if (formatKey === 'json') {
       rawItems = typeof data === 'string' ? JSON.parse(data) : data;
+    } else if (formatKey === 'manabox') {
+      rawItems = parseManaboxText(data);
+      if (rawItems.length === 0) {
+        return res.status(400).json({ error: 'No ManaBox cards found' });
+      }
+
+      const { cards, pairs } = await scryfallApi.bulkFetchByIdentifier(rawItems.map(item => ({
+        ...item,
+        set_id: item.set_code,
+        number: item.collector_number
+      })));
+      await scryfallApi.cacheCards(cards);
+
+      unmatchedCount = rawItems.length - pairs.length;
+      rawItems = pairs.map(({ row, card }) => ({ ...row, card_id: card.id }));
+      if (rawItems.length === 0) {
+        return res.status(400).json({ error: 'No ManaBox cards matched Scryfall' });
+      }
     } else {
       let lines = [];
       if (typeof data === 'string') {
@@ -147,42 +225,78 @@ router.post('/import', async (req, res) => {
       return res.status(400).json({ error: 'Invalid data payload' });
     }
 
+    // Resolved before the transaction, not inside it: resolving can mean a
+    // provider request per row, and a write transaction must not wait on the
+    // network. Identical rows are asked about once.
+    // ponytail: sequential, one lookup per distinct printing; bounded concurrency
+    // if large imports prove too slow.
+    const setMatchers = new Map();
+    const setsFor = async (api, lang) => {
+      if (!setMatchers.has(lang)) {
+        // The provider's own set list, so the id handed back is one its search
+        // understands. pokemontcg.io has no listing; it fills `sets` instead.
+        const sets = await api.listSets(lang)
+          .catch(() => db.all(`SELECT id, name FROM sets WHERE game = 'pokemon'`));
+        setMatchers.set(lang, matcher(sets));
+      }
+      return setMatchers.get(lang);
+    };
+    const resolved = new Map();
+
+    // MTG set+number rows (Moxfield, Deckbox, Archidekt exports) go to Scryfall's
+    // collection endpoint 75 at a time, so a large file costs a few requests
+    // rather than one per row. Rows already cached (a ManaBox import, a backup)
+    // are skipped; a failure leaves the rows to be reported as unresolved.
+    const mtgRows = [];
+    for (const item of rawItems) {
+      const id = item.card_id || item.id;
+      const set = item.set_code || item.set_id;
+      const number = String(item.collector_number || item.number || '').trim().replace(/^0+(?=\d)/, '');
+      if (item.game !== 'mtg' || !set || !number) continue;
+      if (id && await db.get(`SELECT id FROM card_cache WHERE id = ?`, [id])) continue;
+      mtgRows.push({ ...item, set_id: set, number, key: importKey(item) });
+    }
+    if (mtgRows.length) {
+      try {
+        const { cards, pairs } = await scryfallApi.bulkFetchByIdentifier(mtgRows);
+        await scryfallApi.cacheCards(cards);
+        for (const { row, card } of pairs) resolved.set(row.key, card.id);
+      } catch (e) {
+        console.warn(`Import: Scryfall lookup failed: ${e.message}`);
+      }
+    }
+
+    const toImport = [];
+    const unresolved = [];
+    for (const item of rawItems) {
+      const key = importKey(item);
+      if (!resolved.has(key)) {
+        resolved.set(key, await resolveImportedCard(item, req.user, setsFor).catch((e) => {
+          console.warn(`Import: could not resolve ${item.name || item.card_id}: ${e.message}`);
+          return null;
+        }));
+      }
+      const cardId = resolved.get(key);
+      if (cardId) toImport.push({ item, cardId });
+      else unresolved.push({
+        name: item.name || '',
+        set: item.set_code || item.set_id || item.set_name || '',
+        number: item.collector_number || item.number || '',
+        quantity: Math.max(1, parseInt(item.quantity, 10) || 1),
+      });
+    }
+
+    if (toImport.length === 0) {
+      return res.status(400).json({
+        error: 'None of the rows could be matched to a card. Each row needs a set and a card number (or a Bindarr card ID).',
+        unresolved,
+      });
+    }
+
     let importedCount = 0;
 
     await db.withTransaction(async () => {
-      for (const item of rawItems) {
-        let cardId = item.card_id || item.id;
-        if (!cardId && item.set_code && item.collector_number) {
-          cardId = `${item.set_code.toLowerCase()}-${item.collector_number}`;
-        }
-        if (!cardId && item.name) {
-          cardId = item.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        }
-
-        if (!cardId) continue;
-
-        let cached = await db.get(`SELECT id FROM card_cache WHERE id = ?`, [cardId]);
-        if (!cached) {
-          await db.run(
-            `INSERT OR IGNORE INTO card_cache 
-             (id, name, supertype, subtypes, types, rarity, set_id, set_name, number, image_url, price_trend)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              cardId,
-              item.name || 'Imported Card',
-              item.supertype || (item.game === 'mtg' ? 'Card' : 'Pokémon'),
-              '[]',
-              JSON.stringify(item.types || []),
-              item.rarity || 'Common',
-              item.set_code || item.set_id || '',
-              item.set_name || item.set_code || 'Imported Set',
-              item.collector_number || item.number || '',
-              item.image_url || '',
-              item.market_price || item.purchase_price || 0
-            ]
-          );
-        }
-
+      for (const { item, cardId } of toImport) {
         // A copy is a row, never a quantity on one row: a stacked row cannot be
         // filed into separate slots or lent to a deck one copy at a time (#64).
         // Backups and third-party CSVs still carry a quantity column, so expand
@@ -208,9 +322,84 @@ router.post('/import', async (req, res) => {
       }
     });
 
-    return res.json({ success: true, count: importedCount, message: `Successfully imported ${importedCount} items.` });
+    const unmatched = unmatchedCount ? ` ${unmatchedCount} unmatched ManaBox printings were skipped.` : '';
+    // Named, not just counted: the list is what lets the user fix the file.
+    const examples = unresolved.slice(0, 5).map(r => [r.name, r.set, r.number && `#${r.number}`].filter(Boolean).join(' ')).join(', ');
+    const skipped = unresolved.length
+      ? ` ${unresolved.length} row${unresolved.length === 1 ? '' : 's'} could not be matched to a card and ${unresolved.length === 1 ? 'was' : 'were'} skipped (${examples}${unresolved.length > 5 ? ', …' : ''}). Check their set and card number, then import them again.`
+      : '';
+    return res.json({ success: true, count: importedCount, unresolved, message: `Successfully imported ${importedCount} items.${unmatched}${skipped}` });
   } catch (error) {
     return res.status(500).json({ error: 'Import failed', message: error.message });
+  }
+});
+
+// Build a physical box from matching, unfiled cards the user already owns.
+router.post('/import-container', async (req, res) => {
+  const { data, name } = req.body;
+  const containerName = String(name || '').trim();
+  if (!data || !containerName) {
+    return res.status(400).json({ error: 'Container name and ManaBox data are required' });
+  }
+
+  try {
+    const items = parseManaboxText(data);
+    if (items.length === 0) return res.status(400).json({ error: 'No ManaBox cards found' });
+    const duplicate = await db.get(`SELECT id FROM locations WHERE name = ? AND user_id = ?`, [containerName, req.user.id]);
+    if (duplicate) return res.status(400).json({ error: 'A location with this name already exists' });
+
+    const { pairs } = await scryfallApi.bulkFetchByIdentifier(items.map(item => ({
+      ...item,
+      set_id: item.set_code,
+      number: item.collector_number
+    })));
+    if (pairs.length === 0) return res.status(400).json({ error: 'No ManaBox cards matched Scryfall' });
+
+    const requested = pairs.reduce((total, { row }) => total + row.quantity, 0);
+    let locationId;
+    let count = 0;
+    await db.withTransaction(async () => {
+      const entries = [];
+      for (const { row, card } of pairs) {
+        let remaining = row.quantity;
+        const owned = await db.all(`
+          SELECT id FROM collection
+          WHERE user_id = ? AND card_id = ? AND printing = ? AND list_type = 'collection'
+            AND location_id IS NULL AND quantity = 1
+          ORDER BY id
+          LIMIT ?
+        `, [req.user.id, card.id, row.printing || 'Normal', remaining]);
+        for (const entry of owned) {
+          entries.push(entry.id);
+          remaining--;
+        }
+      }
+
+      count = entries.length;
+      const location = await db.run(`
+        INSERT INTO locations (name, type, sort_order, foil_sorting, rule_type, game, user_id)
+        VALUES (?, 'Box', 'custom', 'normals_first', 'any', 'mtg', ?)
+      `, [containerName, req.user.id]);
+      locationId = location.lastID;
+      const compartment = await db.run(
+        `INSERT INTO compartments (location_id, idx, capacity) VALUES (?, 1, ?)`,
+        [locationId, Math.max(1, count)]
+      );
+
+      for (let index = 0; index < entries.length; index++) {
+        await db.run(
+          `UPDATE collection SET location_id = ?, compartment_id = ?, position = ? WHERE id = ? AND user_id = ?`,
+          [locationId, compartment.lastID, (index + 1) * 1000, entries[index], req.user.id]
+        );
+      }
+    });
+
+    const missing = requested - count;
+    const skipped = missing ? ` ${missing} card${missing === 1 ? '' : 's'} not found in Unsorted.` : '';
+    res.status(201).json({ id: locationId, count, missing, message: `Created ${containerName} with ${count} cards.${skipped}` });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to import container' });
   }
 });
 

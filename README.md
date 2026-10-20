@@ -29,8 +29,8 @@ Try it without installing anything at **[thenotoriousjeremy.github.io/bindarr](h
 ## Features
 
 - **Camera scanning** — photograph a card and the server identifies it from the image alone. Works for Magic, Pokémon, and Lorcana.
-- **Physical location tracking** — binders by page and slot (1–9), boxes by row and divider, with a page-flip binder view. Drag cards between pockets to arrange a binder, or file them by tapping on a phone.
-- **Deck checkout** — reserve a deck's cards and get a checklist of exactly which slot each one sits in, then the same list in reverse when you put them back.
+- **Physical location tracking** — binders by page and slot (1–9), boxes by row and divider, with layout and scalable image-list views. Drag cards between pockets to arrange a binder, or file them by tapping on a phone.
+- **Deck Builder & checkout** — build decks, edit their properties, import ManaBox decklists, reserve cards for play, and see exactly which checked-out deck makes a copy unavailable.
 - **Search and bulk add** — search or browse a whole set with multi-select; pin a set and add by collector number one keystroke at a time.
 - **Dashboard** — collection value, 7/30-day trends, rarity and type breakdowns, set completion.
 - **Graded slabs** — record grader, grade and cert number per copy (PSA cert lookup fills them in), and give a slab its own value instead of the raw card's price.
@@ -41,6 +41,37 @@ Try it without installing anything at **[thenotoriousjeremy.github.io/bindarr](h
 - **11 UI languages**, community-translated.
 
 Architecture, the scan pipeline, and the data model are in [PROJECT.md](PROJECT.md).
+
+## Collection and deck workflows
+
+### ManaBox imports
+
+**Decks:** Open **Deck Builder → Create Deck → + Quick Import Decklist**, choose
+**ManaBox text export**, then select the `.txt` export. Bindarr reads the
+filename as the deck name, uses MTG Commander defaults, and resolves each
+printing by its ManaBox set and collector number.
+
+**Storage containers:** In the Storage view, select the upload button beside
+**Create Container**, then choose a ManaBox `.txt` export. Bindarr creates a
+**Box** named from the file (`Black Box.txt` becomes `Black Box`) and files
+matching **Unsorted cards you already own** into its first row. It never adds
+new collection cards during a container import; cards absent from Unsorted are
+reported as not found.
+
+### Deck Builder
+
+Open a deck and select **Edit Properties** to change its name, description,
+format, category, accent color, and target size. A deck's game stays fixed:
+its cards are game-scoped.
+
+Deck cards that cannot currently be used have a red warning. The label shows
+the missing copy count and, when another checked-out deck holds the copy, that
+deck's name — for example, `1 unavailable — Goblin Stampede`.
+
+### Container views
+
+Containers support layout and image-list views. In image-list view, use the
+plus and minus controls to scale card images from 60% to 250%.
 
 ---
 
@@ -108,7 +139,7 @@ The HTTPS certificate is self-signed and generated on first start into the volum
 | Tag | Points at |
 | --- | --- |
 | `latest` | newest release — use this |
-| `1.8`, `1.8.5` | a specific release, if you want to control upgrades |
+| `1.8`, `1.8.7` | a specific release, if you want to control upgrades |
 | `edge` | newest `main` commit, including unreleased work |
 | `sha-<short>` | one exact commit |
 
@@ -137,11 +168,28 @@ All optional.
 | `OIDC_AUTO_PROVISION` | `true` | Automatically create a Bindarr member account on first successful SSO login. |
 | `OIDC_ALLOW_USERNAME_LINK` | `false` | Let an SSO identity attach itself to an **existing** Bindarr account that has the same username. Needed to move accounts created before SSO onto it. **Only turn this on if your users cannot choose their own username at the identity provider** — if they can, someone setting theirs to `admin` takes the owner account on their first login. With it off, an SSO login whose username is already taken is refused rather than silently given a second, empty account. |
 | `OIDC_TOKEN_ENDPOINT_AUTH_METHOD` | `client_secret_basic` | Token endpoint client authentication method. Set to client_secret_basic or client_secret_post. |
+| `NODE_EXTRA_CA_CERTS` | — | PEM file of a private root CA to trust, for an identity provider whose certificate it signed. See [SSO with a private CA](#sso-with-a-private-ca). |
 | `TRUST_PROXY` | — | Number of proxy hops (usually `1`) when a reverse proxy terminates TLS, so rate limiting sees the real client IP. |
 | `CV_MODEL_DIR` | `/app/database/models` in the image | Where the scan models and catalogs live. Must be on persistent storage, or an image update discards every catalog you built. |
 | `CV_SCAN_GAP` | `0.10` | How far a match must stand above its runner-ups before it counts as an answer rather than "this card is not in the catalog". Lower accepts more guesses. |
 | `BACKUP_INTERVAL_HOURS` | `24` | Automatic database snapshot interval. `0` disables. |
 | `BACKUP_KEEP_LAST` | `10` | How many snapshots to retain. |
+
+#### SSO with a private CA
+
+Register `<PUBLIC_BASE_URL>/api/auth/oidc/callback` as the redirect URI at your identity provider (e.g. `https://cards.example.com/api/auth/oidc/callback`). Without `PUBLIC_BASE_URL` it is built from the request's host; `OIDC_REDIRECT_URI` overrides it outright.
+
+If the provider's certificate is signed by your own root CA, SSO login fails with `fetch failed` and the container log names a certificate error such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `SELF_SIGNED_CERT_IN_CHAIN`. Node ships its own CA list and does not read the operating system's certificate store, so adding the CA to the container's system store does not help. Mount the CA's PEM file and point `NODE_EXTRA_CA_CERTS` at it:
+
+```yaml
+    environment:
+      - NODE_EXTRA_CA_CERTS=/certs/root-ca.pem
+    volumes:
+      - bindarr-data:/app/database
+      - ./root-ca.pem:/certs/root-ca.pem:ro
+```
+
+Node reads this variable once at startup, so set it in the container or process environment. A `.env` file read by the server does not work for it.
 
 `GET /api/health` returns `200 {"status":"ok"}` with no auth and backs the image's `HEALTHCHECK`.
 
@@ -160,6 +208,11 @@ The first visit in a browser asks you to create the owner account. The SQLite fi
 ### Mobile apps
 
 `Bindarr-Android.apk` is attached to each release (allow "install from unknown sources"). iOS goes out through TestFlight. Both talk to a Bindarr server, so install one of the above first and point the app at it.
+
+If your server's certificate comes from your own (private) CA, install that CA certificate on the phone first:
+
+- **Android:** Settings → Security → Encryption & credentials → Install a certificate → CA certificate. The app trusts user-installed CAs.
+- **iOS:** install the CA profile, then turn on full trust for it under Settings → General → About → Certificate Trust Settings.
 
 ---
 

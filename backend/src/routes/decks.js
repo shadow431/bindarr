@@ -4,6 +4,8 @@ const cardApi = require('../utils/cardApi');
 const { parseCardRow, recordPrice } = require('../utils/priceHelpers');
 const { compartmentLabel } = require('../utils/compartmentSort');
 const { validateDeckAddition } = require('../utils/deckRules');
+const scryfallApi = require('../scryfallApi');
+const { parseManaboxText } = require('../utils/csvMappers');
 
 const router = express.Router();
 
@@ -49,7 +51,8 @@ router.post('/', async (req, res) => {
     category = 'Competitive',
     accent_color = '#eab308',
     target_size = 60,
-    decklist_text = ''
+    decklist_text = '',
+    decklist_format = 'plain'
   } = req.body;
   
   if (!name) {
@@ -65,22 +68,41 @@ router.post('/', async (req, res) => {
     );
     const newDeckId = result.lastID;
 
-    // Optional decklist import
+    // Optional decklist import. ManaBox identifies a printing by set and
+    // collector number, so resolve those identifiers in batches instead of
+    // guessing from a card name shared by many printings.
     if (decklist_text && typeof decklist_text === 'string') {
-      const lines = decklist_text.split('\n');
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const match = trimmed.match(/^(\d+)x?\s+(.+)$/i);
-        if (match) {
-          const qty = parseInt(match[1], 10);
-          const cardName = match[2].trim();
-          const card = await db.get(`SELECT id FROM card_cache WHERE LOWER(name) = LOWER(?) AND game = ? LIMIT 1`, [cardName, deckGame]);
-          if (card) {
-            await db.run(
-              `INSERT INTO deck_cards (deck_id, card_id, quantity) VALUES (?, ?, ?) ON CONFLICT(deck_id, card_id) DO UPDATE SET quantity = quantity + EXCLUDED.quantity`,
-              [newDeckId, card.id, qty]
-            );
+      if (decklist_format === 'manabox' && deckGame === 'mtg') {
+        const items = parseManaboxText(decklist_text);
+        const { cards, pairs } = await scryfallApi.bulkFetchByIdentifier(items.map(item => ({
+          ...item,
+          set_id: item.set_code,
+          number: item.collector_number
+        })));
+        await scryfallApi.cacheCards(cards);
+        for (const { row, card } of pairs) {
+          await db.run(
+            `INSERT INTO deck_cards (deck_id, card_id, quantity) VALUES (?, ?, ?)
+             ON CONFLICT(deck_id, card_id) DO UPDATE SET quantity = quantity + EXCLUDED.quantity`,
+            [newDeckId, card.id, row.quantity]
+          );
+        }
+      } else {
+        const lines = decklist_text.split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const match = trimmed.match(/^(\d+)x?\s+(.+)$/i);
+          if (match) {
+            const qty = parseInt(match[1], 10);
+            const cardName = match[2].trim();
+            const card = await db.get(`SELECT id FROM card_cache WHERE LOWER(name) = LOWER(?) AND game = ? LIMIT 1`, [cardName, deckGame]);
+            if (card) {
+              await db.run(
+                `INSERT INTO deck_cards (deck_id, card_id, quantity) VALUES (?, ?, ?) ON CONFLICT(deck_id, card_id) DO UPDATE SET quantity = quantity + EXCLUDED.quantity`,
+                [newDeckId, card.id, qty]
+              );
+            }
           }
         }
       }
@@ -116,13 +138,18 @@ router.get('/:id', async (req, res) => {
         cc.number,
         cc.image_url,
         cc.price_trend,
-        (SELECT COALESCE(SUM(quantity), 0) FROM collection WHERE card_id = cc.id AND user_id = ? AND list_type = 'collection') AS owned_qty
+        (SELECT COALESCE(SUM(quantity), 0) FROM collection WHERE card_id = cc.id AND user_id = ? AND list_type = 'collection') AS owned_qty,
+        (SELECT COALESCE(SUM(dc2.quantity), 0)
+         FROM deck_cards dc2 JOIN decks d2 ON dc2.deck_id = d2.id
+         WHERE d2.checked_out = 1 AND d2.user_id = ? AND d2.id != ? AND dc2.card_id = cc.id) AS locked_qty,
+        (SELECT GROUP_CONCAT(d2.name, ', ')
+         FROM deck_cards dc2 JOIN decks d2 ON dc2.deck_id = d2.id
+         WHERE d2.checked_out = 1 AND d2.user_id = ? AND d2.id != ? AND dc2.card_id = cc.id) AS locked_decks
       FROM deck_cards dc
       JOIN card_cache cc ON dc.card_id = cc.id
       WHERE dc.deck_id = ?
     `;
-    const cards = await db.all(cardsQuery, [req.user.id, id]);
-
+    const cards = await db.all(cardsQuery, [req.user.id, req.user.id, id, req.user.id, id, id]);
     const formatted = cards.map(parseCardRow);
 
     res.json({
@@ -215,16 +242,23 @@ router.get('/:id/locations', async (req, res) => {
 // Update Deck Metadata
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, description } = req.body;
+  const { name, description = '', format, category, accent_color, target_size } = req.body;
 
-  if (!name) {
+  if (!name || !String(name).trim()) {
     return res.status(400).json({ error: 'Deck name is required' });
+  }
+  const targetSize = target_size === undefined ? null : parseInt(target_size, 10);
+  if (target_size !== undefined && (!Number.isInteger(targetSize) || targetSize < 1 || targetSize > 300)) {
+    return res.status(400).json({ error: 'target_size must be between 1 and 300' });
   }
 
   try {
     const result = await db.run(
-      `UPDATE decks SET name = ?, description = ? WHERE id = ? AND user_id = ?`,
-      [name, description || '', id, req.user.id]
+      `UPDATE decks
+       SET name = ?, description = ?, format = COALESCE(?, format), category = COALESCE(?, category),
+           accent_color = COALESCE(?, accent_color), target_size = COALESCE(?, target_size)
+       WHERE id = ? AND user_id = ?`,
+      [String(name).trim(), description, format, category, accent_color, targetSize, id, req.user.id]
     );
 
     if (result.changes === 0) {

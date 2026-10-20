@@ -280,7 +280,33 @@ function normalizeCard(raw, lang) {
   };
 }
 
-const cacheCards = (cards) => cacheNormalizedCards(cards, 'mtg');
+// A non-English printing with no price at all, in either currency.
+const unpriced = (c) => c && !languages.isEnglish(c.language)
+  && c.price_normal == null && c.price_holofoil == null;
+
+// Value an unpriced non-English printing at its English printing's price.
+//
+// Neither marketplace lists most non-English Magic, so a German copy came out at
+// $0.00 and dragged every total down with it (#73). The English printing (same set
+// and collector number) is the same card, and its price is the honest estimate.
+// Filled in here, on the way into card_cache, because every price read in the app
+// (totals, set completion, history, sort, export) reads these columns: one write
+// fixes them all. A printing with a price of its own, EUR included, keeps it. Only
+// an English row already cached is used; the price sweep and getPrintingInLang
+// fetch it first when it matters.
+async function cacheCards(cards) {
+  for (const card of cards || []) {
+    if (!unpriced(card)) continue;
+    const english = await db.get(
+      `SELECT price_trend, price_normal, price_holofoil, price_currency FROM card_cache
+        WHERE game = 'mtg' AND set_id = ? AND number = ? AND language = 'English'
+          AND (price_normal IS NOT NULL OR price_holofoil IS NOT NULL) LIMIT 1`,
+      [card.set_id, card.number]
+    );
+    if (english) Object.assign(card, english);
+  }
+  return cacheNormalizedCards(cards, 'mtg');
+}
 
 
 // Look up many known cards in as few requests as possible. Rows are matched by
@@ -306,32 +332,37 @@ async function bulkFetchByIdentifier(rows) {
 
   for (let i = 0; i < rows.length; i += COLLECTION_BATCH) {
     const chunk = rows.slice(i, i + COLLECTION_BATCH);
+    // Several rows can name the same printing (a foil and a non-foil copy of one
+    // collector number), so a key holds every row that asked for it and is sent
+    // to Scryfall once; each returned card then pairs with all of them.
     const byKey = new Map();
-    const identifiers = chunk.map(row => {
-      const uuid = scryfallUuid(row.id || row.card_id);
-      if (uuid) {
-        byKey.set(`id:${uuid.toLowerCase()}`, row);
-        return { id: uuid };
+    const identifiers = [];
+    const want = (key, row, identifier) => {
+      if (!byKey.has(key)) {
+        byKey.set(key, []);
+        identifiers.push(identifier);
       }
+      byKey.get(key).push(row);
+    };
+    for (const row of chunk) {
+      const uuid = scryfallUuid(row.id || row.card_id);
       const setId = row.set_id != null ? String(row.set_id).toLowerCase() : '';
       const num = row.number != null ? String(row.number) : '';
-      if (setId && num) {
-        byKey.set(`sn:${setId}|${num.toLowerCase()}`, row);
-        return { set: setId, collector_number: num };
-      }
-      byKey.set(`n:${String(row.name || '').toLowerCase()}`, row);
-      return { name: row.name || '' };
-    });
+      if (uuid) want(`id:${uuid.toLowerCase()}`, row, { id: uuid });
+      else if (setId && num) want(`sn:${setId}|${num.toLowerCase()}`, row, { set: setId, collector_number: num });
+      else want(`n:${String(row.name || '').toLowerCase()}`, row, { name: row.name || '' });
+    }
 
     const resp = await scryPostRetried('/cards/collection', { identifiers });
     notFound += ((resp.data && resp.data.not_found) || []).length;
     for (const raw of (resp.data && resp.data.data) || []) {
       const norm = normalizeCard(raw);
       cards.push(norm);
-      const row = byKey.get(`id:${String(raw.id).toLowerCase()}`)
+      const matched = byKey.get(`id:${String(raw.id).toLowerCase()}`)
         || byKey.get(`sn:${String(norm.set_id).toLowerCase()}|${String(norm.number).toLowerCase()}`)
-        || byKey.get(`n:${String(norm.name).toLowerCase()}`);
-      if (row) pairs.push({ row, card: norm });
+        || byKey.get(`n:${String(norm.name).toLowerCase()}`)
+        || [];
+      for (const row of matched) pairs.push({ row, card: norm });
     }
   }
   return { cards, pairs, notFound };
@@ -651,6 +682,11 @@ async function updateCollectionPrices(force = false) {
     // same sweep is a handful of calls. Verified contract: { data, not_found }.
     try {
       const { cards: fresh, pairs, notFound } = await bulkFetchByIdentifier(cards);
+      // Refresh the English printing behind each unpriced localized one first, so
+      // cacheCards values it at today's English price, even when that printing is
+      // not owned (or was never cached). Set + number with no id answers in English.
+      const english = fresh.filter(unpriced).map(c => ({ set_id: c.set_id, number: c.number }));
+      if (english.length) await cacheCards((await bulkFetchByIdentifier(english)).cards);
       if (fresh.length) await cacheCards(fresh);
       for (const { row, card } of pairs) {
         await recordPrice(row.card_id, card.price_trend);
@@ -676,9 +712,13 @@ async function updateCollectionPrices(force = false) {
 //
 // Returns null rather than throwing when the card was never printed in that
 // language (Japanese has no Alpha), so callers keep the English card they had.
+//
+// English is a language like any other here. It used to return null, which is
+// what kept a copy set back from German to English on the German printing (and
+// its missing price) for good (#73).
 async function getPrintingInLang(setCode, number, lang) {
   const code = languages.resolve(lang).scryfall;
-  if (code === 'en' || !setCode || !number) return null;
+  if (!setCode || !number) return null;
   const name = languages.toName(code);
   const cached = await db.get(
     `SELECT * FROM card_cache WHERE game = 'mtg' AND set_id = ? AND number = ? AND language = ? LIMIT 1`,
@@ -693,6 +733,8 @@ async function getPrintingInLang(setCode, number, lang) {
     // usual "not printed in it" signal, but the endpoint can also fall back, and
     // caching an English row under a Japanese query would poison the lookup above.
     if (languages.toCode(norm.language) !== languages.toCode(code)) return null;
+    // Cache its English printing first, so cacheCards has a price to fall back to.
+    if (unpriced(norm)) await getPrintingInLang(setCode, number, 'en');
     await cacheCards([norm]);
     return norm;
   } catch {
@@ -717,4 +759,4 @@ async function getCardById(cardId) {
 
 // `client` and `fetchWindow` are exported for tests (stub the axios adapter),
 // mirroring how tcgApi exposes tcgClient.
-module.exports = { searchCards, normalizeCard, cacheCards, getCardsBySet, fetchAndCacheSets, updateCollectionPrices, getCardById, getPrintingInLang, scryGetRetried, client, fetchWindow };
+module.exports = { searchCards, normalizeCard, cacheCards, getCardsBySet, fetchAndCacheSets, updateCollectionPrices, getCardById, getPrintingInLang, scryGetRetried, bulkFetchByIdentifier, client, fetchWindow };

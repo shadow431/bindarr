@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { DndContext, DragOverlay, MouseSensor, useSensor, useSensors, useDraggable, useDroppable, pointerWithin } from '@dnd-kit/core';
-import { Plus, Trash2, X, MoreVertical, Settings, RefreshCw, Lock, LayoutGrid, List, MousePointerClick, ChevronDown, ChevronUp, Edit3 } from 'lucide-react';
+import { Plus, Minus, Trash2, X, MoreVertical, Settings, RefreshCw, Lock, LayoutGrid, List, MousePointerClick, ChevronDown, ChevronUp, Edit3, Upload } from 'lucide-react';
 import { sortCardsByOrder } from '../utils/cardSort';
 import { getFoilOverlayClass, getPrintingBadgeLabel, getPrintingBadgeStyle } from '../utils/cardPrinting';
 import { getCardRarityBorder, getRarityBadgeStyle, getRarityBadgeLabel } from '../utils/cardRarity';
@@ -81,6 +81,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
 
   const [showCreate, setShowCreate] = useState(false);
+  const containerImportInput = useRef(null);
 
   const [capacityUpdatePending, setCapacityUpdatePending] = useState(null);
   const [showKebabMenu, setShowKebabMenu] = useState(false);
@@ -91,6 +92,8 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
   const [capacityDraft, setCapacityDraft] = useState('');
   const [countDraft, setCountDraft] = useState('');
   const [stackingDraft, setStackingDraft] = useState(false);
+  // Fixed slots by collector number: null = off, else rows of { set_id, start_slot, max_number }.
+  const [fixedDraft, setFixedDraft] = useState(null);
 
   const [inspectorCard, setInspectorCard] = useState(null);
 
@@ -115,6 +118,8 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
   const [unsortedSearch, setUnsortedSearch] = useState('');
   const [unsortedSort, setUnsortedSort] = useState('scanned-desc');
   const [unsortedViewMode, setUnsortedViewMode] = useState('grid'); // 'grid' | 'detail'
+  const [containerViewMode, setContainerViewMode] = useState('layout'); // 'layout' | 'list'
+  const [containerCardScale, setContainerCardScale] = useState(1);
   const [unsortedBulkLocation, setUnsortedBulkLocation] = useState('');
 
   const {
@@ -482,6 +487,33 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
     }
   };
 
+  const handleContainerImportFile = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const response = await fetch('/api/import-container', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: String(reader.result || ''), name: file.name.replace(/\.[^.]+$/, '') })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || t('loc.errCreate'));
+        showToast(data.message);
+        setActiveLocationId(data.id);
+        await refreshAll();
+        onUpdate();
+      } catch (error) {
+        console.error(error);
+        showToast(error.message);
+      }
+    };
+    reader.onerror = () => showToast(t('settings.errReadFile'));
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
   const handleDeleteLocation = async (locId, name) => {
     if (selectedLoc && selectedLoc.id === locId && selectedLoc.locked) {
       showToast(t('loc.lockedDelete'));
@@ -812,6 +844,14 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
     [allCards, activeLocationId]
   );
 
+  const containerListCards = useMemo(() => {
+    const compartmentIndex = new Map(compartments.map((compartment, index) => [compartment.id, index]));
+    return [...cardsInActiveLocation].sort((a, b) =>
+      (compartmentIndex.get(a.compartment_id) ?? Infinity) - (compartmentIndex.get(b.compartment_id) ?? Infinity)
+      || (a.position || 0) - (b.position || 0)
+    );
+  }, [cardsInActiveLocation, compartments]);
+
   const openCompartmentRules = (comp) => {
     let draft = [];
     const cfg = comp.rule_config;
@@ -979,11 +1019,20 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
     const newSort = sortDraft.length > 0 ? JSON.stringify(sortDraft) : 'custom';
     const sortChanged = newSort !== selectedLoc.sort_order;
 
+    const fixedRows = (fixedDraft || []).filter(r => r.set_id).map(r => ({
+      set_id: r.set_id,
+      start_slot: parseInt(r.start_slot, 10) || 1,
+      max_number: r.max_number === '' || r.max_number == null ? null : parseInt(r.max_number, 10)
+    }));
+    const fixedSlots = fixedRows.length > 0 ? fixedRows : null;
+    const fixedChanged = JSON.stringify(fixedSlots) !== (selectedLoc.fixed_slots || 'null');
+
     const fields = {
       sort_order: newSort,
       rule_type: filterDraft.length > 0 ? 'compound' : 'any',
       rule_config: filterDraft.length > 0 ? JSON.stringify({ rules: filterDraft }) : null,
       allow_stacking: stackingDraft,
+      fixed_slots: fixedSlots,
     };
     const trimmedName = (nameDraft || '').trim();
     if (trimmedName && trimmedName !== selectedLoc.name) fields.name = trimmedName;
@@ -1027,7 +1076,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
     setShowRulesModal(false);
 
-    if (sortChanged && newSort !== 'custom' && (selectedLoc.total_cards || 0) > 0) {
+    if ((fixedChanged || (sortChanged && newSort !== 'custom')) && (selectedLoc.total_cards || 0) > 0) {
       if (window.confirm(t('loc.confirmResortAfterChange'))) {
         startResort(true);
       }
@@ -1162,6 +1211,63 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
               </div>
             )}
 
+            {isBinderType && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
+                  <input
+                    type="checkbox"
+                    id="fixedSlotsOpt"
+                    checked={!!fixedDraft}
+                    onChange={(e) => setFixedDraft(e.target.checked ? [{ set_id: '', start_slot: 1, max_number: '' }] : null)}
+                    style={{ width: '16px', height: '16px', cursor: 'pointer', marginTop: '0.1rem', flexShrink: 0 }}
+                  />
+                  <label htmlFor="fixedSlotsOpt" style={{ cursor: 'pointer', margin: 0, fontSize: '0.75rem', color: 'var(--text-primary)', lineHeight: 1.35 }}>
+                    <strong>{t('loc.fixedSlots')}</strong>
+                    <span style={{ display: 'block', color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                      {t('loc.fixedSlotsHint')}
+                    </span>
+                  </label>
+                </div>
+                {fixedDraft && (
+                  <>
+                    {fixedDraft.map((row, i) => {
+                      const update = (patch) => setFixedDraft(fixedDraft.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+                      return (
+                        <div key={i} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 4.5rem 4.5rem auto', gap: '0.35rem', alignItems: 'end' }}>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)', minWidth: 0 }}>
+                            {t('loc.fixedSlotsSet')}
+                            <select className="select-control" value={row.set_id} onChange={(e) => update({ set_id: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }}>
+                              <option value="">—</option>
+                              {/* A saved set the catalogue no longer lists still shows, rather than reading as unset. */}
+                              {row.set_id && !setsList.some(s => s.id === row.set_id) && <option value={row.set_id}>{row.set_id}</option>}
+                              {setsList
+                                .filter(s => !selectedLoc.game || selectedLoc.game === 'any' || s.game === selectedLoc.game || s.id === row.set_id)
+                                .map(s => <option key={s.id} value={s.id}>{s.name} ({s.ptcgo_code || s.id})</option>)}
+                            </select>
+                          </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
+                            {t('loc.fixedSlotsStart')}
+                            <input type="number" min="1" className="input-control" value={row.start_slot} onChange={(e) => update({ start_slot: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }} />
+                          </label>
+                          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
+                            {t('loc.fixedSlotsMax')}
+                            <input type="number" min="1" className="input-control" value={row.max_number} placeholder={t('loc.fixedSlotsNoMax')} onChange={(e) => update({ max_number: e.target.value })} style={{ fontSize: '0.75rem', padding: '0.3rem' }} />
+                          </label>
+                          <button type="button" className="btn btn-secondary btn-icon-only" onClick={() => setFixedDraft(fixedDraft.filter((_, j) => j !== i))} title={t('loc.fixedSlotsRemove')} aria-label={t('loc.fixedSlotsRemove')} style={{ width: '28px', height: '28px', padding: 0 }}>
+                            <X size={14} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <button type="button" className="btn btn-secondary" onClick={() => setFixedDraft([...fixedDraft, { set_id: '', start_slot: 1, max_number: '' }])} style={{ alignSelf: 'flex-start', fontSize: '0.72rem', padding: '0.25rem 0.5rem' }}>
+                      <Plus size={12} /> {t('loc.fixedSlotsAdd')}
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem', lineHeight: 1.35 }}>{t('loc.fixedSlotsOverflow')}</span>
+                  </>
+                )}
+              </div>
+            )}
+
             <div style={{ background: 'var(--bg-tertiary, rgba(255,255,255,0.04))', borderRadius: 'var(--radius-sm)', padding: '0.4rem 0.55rem', fontSize: '0.72rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               {/* Label only — the count sits in the value beside it, so this is
                   not loc.cardsCurrentlyStored, whose sentence carries a {count}
@@ -1225,6 +1331,10 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
             <button type="button" className="btn btn-secondary btn-icon-only" onClick={() => setShowCreate(s => !s)} style={{ width: '28px', height: '28px', padding: 0 }} title={t('loc.createContainer')}>
               <Plus size={14} />
             </button>
+            <button type="button" className="btn btn-secondary btn-icon-only" onClick={() => containerImportInput.current?.click()} style={{ width: '28px', height: '28px', padding: 0 }} title={t('loc.importContainer')}>
+              <Upload size={14} />
+            </button>
+            <input ref={containerImportInput} type="file" accept=".txt,text/plain" onChange={handleContainerImportFile} style={{ display: 'none' }} />
             {selectedLoc && !!selectedLoc.locked && (
               <button type="button" onClick={handleToggleContainerLock} title={t('loc.lockedBadgeHint')} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.62rem', fontWeight: 800, padding: '0.15rem 0.45rem', borderRadius: '999px', cursor: 'pointer', background: 'rgba(255,193,7,0.15)', border: '1px solid var(--accent-yellow)', color: 'var(--accent-yellow)' }}>
                 <Lock size={11} /> Locked
@@ -1234,6 +1344,54 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
           
           {selectedLoc && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            {!filingMode && !moveMode && (
+              <div style={{ display: 'flex', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-glass)' }}>
+                <button
+                  type="button"
+                  className={`btn btn-icon-only ${containerViewMode === 'layout' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setContainerViewMode('layout')}
+                  style={{ borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.35rem', width: '28px', height: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                  title={t('loc.gridView')}
+                >
+                  <LayoutGrid size={13} />
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-icon-only ${containerViewMode === 'list' ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setContainerViewMode('list')}
+                  style={{ borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.35rem', width: '28px', height: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                  title={t('loc.detailView')}
+                >
+                  <List size={13} />
+                </button>
+              </div>
+            )}
+            {containerViewMode === 'list' && !filingMode && !moveMode && (
+              <div style={{ display: 'flex', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-glass)' }}>
+                <button
+                  type="button"
+                  className="btn btn-icon-only btn-secondary"
+                  disabled={containerCardScale <= 0.6}
+                  onClick={() => setContainerCardScale(scale => Math.max(0.6, +(scale - 0.2).toFixed(1)))}
+                  aria-label={t('loc.decreaseCardScale')}
+                  title={t('loc.decreaseCardScale')}
+                  style={{ borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.35rem', width: '28px', height: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Minus size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-icon-only btn-secondary"
+                  disabled={containerCardScale >= 2.5}
+                  onClick={() => setContainerCardScale(scale => Math.min(2.5, +(scale + 0.2).toFixed(1)))}
+                  aria-label={t('loc.increaseCardScale')}
+                  title={t('loc.increaseCardScale')}
+                  style={{ borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.35rem', width: '28px', height: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Plus size={13} />
+                </button>
+              </div>
+            )}
             {!filingMode && !moveMode && (selectedLoc.total_cards || 0) > 0 && (
               <button
                 type="button"
@@ -1311,6 +1469,9 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
                     setNameDraft(selectedLoc.name || '');
                     setStackingDraft(!!selectedLoc.allow_stacking);
+                    let fixed = null;
+                    try { fixed = selectedLoc.fixed_slots ? JSON.parse(selectedLoc.fixed_slots) : null; } catch { /* ignore */ }
+                    setFixedDraft(Array.isArray(fixed) && fixed.length > 0 ? fixed.map(r => ({ ...r, max_number: r.max_number ?? '' })) : null);
                     setCountDraft(String(compartments.length));
                     const caps = compartments.map(c => c.capacity);
                     const uniform = caps.length > 0 && caps.every(c => c === caps[0]);
@@ -1389,7 +1550,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
               </div>
             )}
 
-            {isBinderType && compartments.length > 0 && (
+            {containerViewMode === 'layout' && isBinderType && compartments.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1rem', margin: '0.2rem 0', background: 'rgba(0,0,0,0.1)', padding: '0.4rem', borderRadius: 'var(--radius-sm)' }}>
                 <button
                   type="button"
@@ -1442,7 +1603,26 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
               </div>
             )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: isBinderType ? '1rem' : '0.6rem' }}>
+            {containerViewMode === 'list' && (
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${84 * containerCardScale}px, 1fr))`, gap: '0.45rem' }}>
+                {containerListCards.map(card => {
+                  const selected = storage.selectedIds.has(card.entry_id);
+                  return (
+                    <button
+                      key={card.entry_id}
+                      type="button"
+                      onClick={() => storage.selectMode ? storage.toggleSelect(card.entry_id) : setInspectorCard(card)}
+                      aria-label={displayName(card)}
+                      title={displayName(card)}
+                      style={{ display: 'flex', justifyContent: 'center', width: '100%', padding: '0.25rem', border: selected ? '2px solid var(--accent-red)' : '1px solid var(--border-glass)', borderRadius: 'var(--radius-sm)', background: selected ? 'rgba(255,71,71,0.12)' : 'rgba(255,255,255,0.03)', cursor: 'pointer' }}
+                    >
+                      <CardImage card={card} style={{ width: '100%', borderRadius: '3px' }} />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: containerViewMode === 'layout' ? 'flex' : 'none', flexDirection: 'column', gap: isBinderType ? '1rem' : '0.6rem' }}>
               {isBinderType ? (() => {
                 if (compartments.length === 0) return null;
                 const pageProps = (c, i) => ({

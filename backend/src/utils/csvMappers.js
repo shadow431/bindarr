@@ -7,11 +7,14 @@ const CONDITION_MAP = {
 };
 
 const STRATEGIES = {
+  // Every .csv the Settings page uploads lands here (it sends format 'csv'), so
+  // the column names other apps use are read too: without a set and a number
+  // the row cannot be resolved to a card at all (#75).
   internal: (row) => ({
-    name: row['Name'] || row['card_name'] || row['Name'],
-    set_code: row['Set ID'] || row['set_code'] || row['Set Code'],
+    name: row['Name'] || row['card_name'] || row['Card Name'] || row['Product Name'],
+    set_code: row['Set ID'] || row['set_code'] || row['Set Code'] || row['Set code'] || row['Set'],
     set_name: row['Set Name'] || row['set_name'],
-    collector_number: row['Card Number'] || row['card_number'] || row['number'],
+    collector_number: row['Card Number'] || row['card_number'] || row['number'] || row['Number'] || row['Card number'] || row['Collector Number'],
     card_id: row['Card ID'] || row['card_id'],
     quantity: parseInt(row['Quantity'] || row['quantity'], 10) || 1,
     condition: CONDITION_MAP[(row['Condition'] || '').toLowerCase()] || 'Near Mint',
@@ -55,8 +58,39 @@ function parseThirdPartyCSV(rows, formatType = 'tcgplayer') {
   return rows.map(strategy);
 }
 
+// ManaBox's plain-text export is a decklist: `2 Card Name (SET) 123`, with
+// `*F*`/star tags for foil copies. Group duplicate lines because an export may
+// list the same printing in multiple sections.
+function parseManaboxText(data) {
+  if (typeof data !== 'string') return [];
+  const items = new Map();
+
+  for (const line of data.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(.+?)\s+\(([A-Za-z0-9]+)\)\s+([A-Za-z0-9]+)(.*)$/);
+    if (!match) continue;
+
+    const [, quantity, name, set_code, collector_number, tags] = match;
+    const printing = /(?:\*F\*|★)/i.test(tags) ? 'Holofoil' : 'Normal';
+    const key = `${set_code.toLowerCase()}|${collector_number.toLowerCase()}|${printing}`;
+    const item = items.get(key) || {
+      name,
+      set_code,
+      collector_number,
+      quantity: 0,
+      condition: 'Near Mint',
+      printing,
+      game: 'mtg'
+    };
+    item.quantity += parseInt(quantity, 10);
+    items.set(key, item);
+  }
+
+  return [...items.values()];
+}
+
 module.exports = {
   CONDITION_MAP,
   STRATEGIES,
-  parseThirdPartyCSV
+  parseThirdPartyCSV,
+  parseManaboxText
 };
