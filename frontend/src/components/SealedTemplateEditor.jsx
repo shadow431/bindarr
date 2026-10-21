@@ -40,7 +40,6 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId, productName]);
 
   const searchCards = async (page = 1) => {

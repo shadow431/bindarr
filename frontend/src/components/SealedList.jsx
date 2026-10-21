@@ -85,7 +85,7 @@ function LinkedCardsPanel({ unitId, expectedCards, refreshKey, showToast, onChan
       .catch(() => setCards([]));
   };
 
-  useEffect(load, [unitId, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(load, [unitId, refreshKey]);
 
   const unlink = async (entryId) => {
     const res = await fetch(`/api/collection/${entryId}`, {
