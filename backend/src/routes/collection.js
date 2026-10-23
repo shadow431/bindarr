@@ -34,6 +34,53 @@ async function conflictingSealedLinks(ids, userId, unitId) {
   );
 }
 
+async function allocateSealedUnitCost(unitId, userId, total, method = 'equal') {
+  const linkedRows = await db.all(
+    `SELECT c.id, c.quantity, COALESCE(cc.price_trend, 0) AS price FROM collection c
+       LEFT JOIN card_cache cc ON cc.id = c.card_id
+      WHERE c.sealed_unit_id = ? AND c.user_id = ?`,
+    [unitId, userId]
+  );
+  const childPurchases = await db.all(
+    `SELECT p.id, p.expected_cards, COUNT(u.id) AS unit_count
+       FROM sealed_purchases p
+       JOIN sealed_units u ON u.purchase_id = p.id
+      WHERE p.source_unit_id = ? AND p.user_id = ?
+      GROUP BY p.id`,
+    [unitId, userId]
+  );
+  const childCardCount = childPurchases.reduce((sum, purchase) =>
+    sum + Math.max(1, Number(purchase.expected_cards) || 1) * Number(purchase.unit_count), 0);
+  const cardCount = linkedRows.reduce((sum, row) => sum + Math.max(1, Number(row.quantity) || 1), 0);
+  const componentCount = cardCount + childCardCount;
+  if (componentCount === 0) return { linkedRows, cardCount, componentCount };
+
+  const totalPrice = Math.round(Number(total) * 100) / 100;
+  const cardTotal = childCardCount
+    ? Math.round(totalPrice * cardCount / componentCount * 100) / 100
+    : totalPrice;
+  if (linkedRows.length) {
+    const copyPrices = linkedRows.flatMap(row =>
+      Array(Math.max(1, Number(row.quantity) || 1)).fill(row.price || 0));
+    const copyShares = splitPrice(copyPrices, cardTotal, method);
+    let copyOffset = 0;
+    for (let i = 0; i < linkedRows.length; i++) {
+      const quantity = Math.max(1, Number(linkedRows[i].quantity) || 1);
+      const rowCost = copyShares.slice(copyOffset, copyOffset + quantity).reduce((sum, share) => sum + share, 0);
+      copyOffset += quantity;
+      await db.run(`UPDATE collection SET purchase_price = ? WHERE id = ? AND user_id = ?`, [rowCost / quantity, linkedRows[i].id, userId]);
+    }
+  }
+  if (childCardCount) {
+    const pricePerCard = (totalPrice - cardTotal) / childCardCount;
+    for (const purchase of childPurchases) {
+      const childUnitPrice = pricePerCard * Math.max(1, Number(purchase.expected_cards) || 1);
+      await db.run(`UPDATE sealed_purchases SET unit_price = ? WHERE id = ? AND user_id = ?`, [childUnitPrice, purchase.id, userId]);
+    }
+  }
+  return { linkedRows, cardCount, componentCount };
+}
+
 // Stamp each result with how many copies the user already owns, so browsing a
 // set shows what is already in the binder instead of inviting duplicate adds.
 // A collection-scope search already reports owned_qty from its own join.
@@ -1423,17 +1470,8 @@ router.post('/collection/bulk', async (req, res) => {
         );
       }
       if (unit?.unit_price != null && rows.length) {
-        const linkedRows = await db.all(
-          `SELECT c.id, c.quantity, COALESCE(cc.price_trend, 0) AS price FROM collection c
-             LEFT JOIN card_cache cc ON cc.id = c.card_id
-            WHERE c.sealed_unit_id = ? AND c.user_id = ?`,
-          [unitId, req.user.id]
-        );
-        const quantities = linkedRows.map(row => Math.max(1, Number(row.quantity) || 1));
-        const perCardPrice = Number(unit.unit_price) / quantities.reduce((sum, quantity) => sum + quantity, 0);
-        for (let i = 0; i < linkedRows.length; i++) {
-          await db.run(`UPDATE collection SET purchase_price = ? WHERE id = ? AND user_id = ?`, [perCardPrice, linkedRows[i].id, req.user.id]);
-        }
+        const allocation = await allocateSealedUnitCost(unitId, req.user.id, unit.unit_price);
+        if (allocation.componentCount === 0) return res.status(400).json({ error: 'No cards or recipe components are linked to this sealed unit' });
       }
       if (unit) {
         const copyCount = rows.reduce((sum, row) => sum + (Number(row.quantity) || 1), 0);
@@ -1486,19 +1524,9 @@ router.post('/collection/bulk', async (req, res) => {
           [unitId, rows[i].id, req.user.id]
         );
       }
-      const linkedRows = await db.all(
-        `SELECT c.id, c.quantity, COALESCE(cc.price_trend, 0) AS price FROM collection c
-           LEFT JOIN card_cache cc ON cc.id = c.card_id
-          WHERE c.sealed_unit_id = ? AND c.user_id = ?`,
-        [unitId, req.user.id]
-      );
-      const quantities = linkedRows.map(row => Math.max(1, Number(row.quantity) || 1));
-      const shares = splitPrice(linkedRows.map((row, index) => (row.price || 0) * quantities[index]), total, method);
-      for (let i = 0; i < linkedRows.length; i++) {
-        await db.run(`UPDATE collection SET purchase_price = ? WHERE id = ? AND user_id = ?`, [shares[i] / quantities[i], linkedRows[i].id, req.user.id]);
-      }
-      const copyCount = linkedRows.reduce((sum, row) => sum + (Number(row.quantity) || 1), 0);
-      return res.json({ message: `Linked ${copyCount} card copy/copies; allocated $${total.toFixed(2)} across the opened pack`, affected: rows.length });
+      const allocation = await allocateSealedUnitCost(unitId, req.user.id, total, method);
+      const copyCount = allocation.cardCount;
+      return res.json({ message: `Linked ${copyCount} card copy/copies; allocated $${total.toFixed(2)} across ${allocation.componentCount} cards and sealed components`, affected: rows.length });
     }
 
     const locationId = value ? parseInt(value, 10) : null;

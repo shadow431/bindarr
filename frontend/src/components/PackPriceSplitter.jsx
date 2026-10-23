@@ -14,13 +14,13 @@ import { useT } from '../utils/i18n';
 export default function PackPriceSplitter({ entryIds, onApplied, showToast, style, sealedUnitId, sealedUnitPrice }) {
   const { t } = useT();
   const [total, setTotal] = useState(sealedUnitPrice != null ? String(sealedUnitPrice) : '');
-  const [method, setMethod] = useState('weighted');
+  const [method, setMethod] = useState(sealedUnitId ? 'equal' : 'weighted');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (sealedUnitPrice != null) setTotal(String(sealedUnitPrice));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sealedUnitId]);
+    setMethod(sealedUnitId ? 'equal' : 'weighted');
+  }, [sealedUnitId, sealedUnitPrice]);
 
   const apply = async () => {
     const amount = parseFloat(total);

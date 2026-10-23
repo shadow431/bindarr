@@ -22,8 +22,9 @@ const setsMatch = (a, b) => {
 // when a card in that set is actually in the recent list.
 function LinkCardsPanel({ unit, purchase, showToast, onLinked }) {
   const { t } = useT();
-  const [entries, setEntries] = useState([]);
+  const [collectionCards, setCollectionCards] = useState([]);
   const [selected, setSelected] = useState([]);
+  const [cardQuery, setCardQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -33,13 +34,20 @@ function LinkCardsPanel({ unit, purchase, showToast, onLinked }) {
         const rows = (Array.isArray(d.collection) ? d.collection : Array.isArray(d) ? d : [])
           .filter(c => !c.sealed_unit_id && c.game === purchase.game)
           .sort((a, b) => new Date(b.added_at) - new Date(a.added_at));
-        const sameSet = purchase.set_name ? rows.filter(c => setsMatch(c.set_name, purchase.set_name)) : [];
-        setEntries((sameSet.length ? sameSet : rows).slice(0, 20));
+        setCollectionCards(rows);
       })
       .catch(() => showToast?.(t('sealed.errLoadCards')))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unit.id]);
+
+  const sameSet = purchase.set_name
+    ? collectionCards.filter(c => setsMatch(c.set_name, purchase.set_name))
+    : [];
+  const normalizedQuery = cardQuery.trim().toLowerCase();
+  const entries = (normalizedQuery
+    ? collectionCards.filter(c => `${c.name} ${c.set_name} ${c.number}`.toLowerCase().includes(normalizedQuery))
+    : sameSet.length ? sameSet : collectionCards);
 
   const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
 
@@ -47,18 +55,28 @@ function LinkCardsPanel({ unit, purchase, showToast, onLinked }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem 0' }}>
-      {entries.length === 0 ? (
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{t('sealed.noRecentCards')}</div>
-      ) : (
-        <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-          {entries.map(c => (
-            <label key={c.entry_id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-strong)' }}>
-              <input type="checkbox" checked={selected.includes(c.entry_id)} onChange={() => toggle(c.entry_id)} />
-              {c.name} <span style={{ color: 'var(--text-secondary)' }}>· {c.set_name}</span>
-            </label>
-          ))}
-        </div>
-      )}
+      <>
+        <input
+          type="search"
+          value={cardQuery}
+          onChange={e => setCardQuery(e.target.value)}
+          placeholder={t('sealed.cardSearchPlaceholder')}
+          aria-label={t('sealed.cardSearchPlaceholder')}
+          style={{ width: '100%', boxSizing: 'border-box' }}
+        />
+        {entries.length === 0 ? (
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{t('sealed.noRecentCards')}</div>
+        ) : (
+          <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+            {entries.map(c => (
+              <label key={c.entry_id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-strong)' }}>
+                <input type="checkbox" checked={selected.includes(c.entry_id)} onChange={() => toggle(c.entry_id)} />
+                {c.name} <span style={{ color: 'var(--text-secondary)' }}>· {c.set_name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </>
       <PackPriceSplitter
         entryIds={selected}
         sealedUnitId={unit.id}

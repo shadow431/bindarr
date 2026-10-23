@@ -78,7 +78,7 @@ async function main() {
   // A purchase of the same product name auto-attaches the template.
   res = await fetch(`${base}/api/sealed/purchases`, {
     method: 'POST', headers: asUser(alice),
-    body: JSON.stringify({ product_name: 'Build & Battle Box', game: 'pokemon', quantity: 1, unit_price: 29.99, expected_cards: 3 }),
+    body: JSON.stringify({ product_name: 'Build & Battle Box', game: 'pokemon', quantity: 1, unit_price: 29.99, expected_cards: 101 }),
   });
   assert.strictEqual(res.status, 201);
   const { purchase } = await res.json();
@@ -86,6 +86,12 @@ async function main() {
   console.log('PASS: a new purchase of a known product auto-attaches its recipe');
 
   const [unit] = await db.all(`SELECT * FROM sealed_units WHERE purchase_id = ?`, [purchase.id]);
+
+  const originalAdd = await fetch(`${base}/api/collection`, {
+    method: 'POST', headers: asUser(alice), body: JSON.stringify({ card_id: 'promo-1' }),
+  });
+  assert.strictEqual(originalAdd.status, 200);
+  const originalCard = await originalAdd.json();
 
   // Opening the unit applies every component exactly once.
   res = await fetch(`${base}/api/sealed/units/${unit.id}/open`, {
@@ -95,20 +101,28 @@ async function main() {
   const opened1 = await res.json();
   assert.strictEqual(opened1.applied.length, 3, 'opening must report the components it applied');
 
-  const linkedPromo = await db.get(`SELECT * FROM collection WHERE card_id = 'promo-1' AND user_id = ?`, [alice]);
+  const linkedPromo = await db.get(`SELECT * FROM collection WHERE card_id = 'promo-1' AND user_id = ? AND sealed_unit_id = ?`, [alice, unit.id]);
   assert.ok(linkedPromo, 'the guaranteed card component must be added to the collection');
   assert.strictEqual(linkedPromo.sealed_unit_id, unit.id, 'the guaranteed card must be linked to the unit it came from');
+  assert.ok(Math.abs(linkedPromo.purchase_price - (29.99 / 101)) < 0.000001,
+    'guaranteed cards must receive their share of the parent cost alongside generated sealed products');
+
+  res = await fetch(`${base}/api/collection/bulk`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ entry_ids: [linkedPromo.id], action: 'delete' }),
+  });
+  assert.strictEqual(res.status, 200, 'deleting the duplicate recipe card must succeed');
 
   const subPurchases = await db.all(`SELECT * FROM sealed_purchases WHERE source_unit_id = ?`, [unit.id]);
   assert.strictEqual(subPurchases.length, 2, 'both product components must become their own sealed purchases');
   const boosterPurchase = subPurchases.find(p => p.product_name === 'Booster Pack');
   assert.strictEqual(boosterPurchase.quantity, 4, 'the booster sub-purchase must carry the component quantity');
   assert.strictEqual(boosterPurchase.expected_cards, 10, 'the spawned pack must inherit its configured expected-card limit');
-  assert.ok(Math.abs(boosterPurchase.unit_price - (29.99 / 5)) < 0.000001,
-    'the parent unit price must be allocated across all spawned sealed product units');
+  assert.ok(Math.abs(boosterPurchase.unit_price - (29.99 / 101 * 10)) < 0.000001,
+    'each booster unit must receive cost for its expected cards');
   const preconPurchase = subPurchases.find(p => p.product_name === 'Precon Deck');
-  assert.ok(Math.abs(preconPurchase.unit_price - (29.99 / 5)) < 0.000001,
-    'each spawned product type must receive the same per-unit cost allocation');
+  assert.ok(Math.abs(preconPurchase.unit_price - (29.99 / 101 * 60)) < 0.000001,
+    'each spawned product unit must receive cost for its expected cards');
   const boosterUnits = await db.all(`SELECT * FROM sealed_units WHERE purchase_id = ?`, [boosterPurchase.id]);
   assert.strictEqual(boosterUnits.length, 4, 'the booster sub-purchase must get one sealed_unit per quantity');
   console.log('PASS: opening a unit auto-creates its card and sub-product components');
@@ -139,36 +153,42 @@ async function main() {
   assert.strictEqual(restoredChildren.length, 2, 'reopening must restore only the missing child, without duplicating existing children');
   const restoredBooster = restoredChildren.find(p => p.product_name === 'Booster Pack');
   assert.strictEqual(restoredBooster.quantity, 4, 'the restored child must have the template quantity');
-  assert.ok(Math.abs(restoredBooster.unit_price - (29.99 / 5)) < 0.000001,
+  assert.ok(Math.abs(restoredBooster.unit_price - (29.99 / 101 * 10)) < 0.000001,
     'the restored child must receive its allocated per-unit cost');
 
   await db.run(
     `INSERT OR REPLACE INTO card_cache (id, name, supertype, subtypes, types, rarity, set_id, set_name, number, image_url, price_trend, game)
      VALUES ('promo-2', 'Second Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P2', '', 10, 'pokemon'),
-            ('promo-3', 'Third Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P3', '', 20, 'pokemon')`
+            ('promo-3', 'Third Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P3', '', 20, 'pokemon'),
+            ('promo-4', 'Fourth Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P4', '', 15, 'pokemon'),
+            ('promo-5', 'Fifth Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P5', '', 12, 'pokemon')`
   );
-  const linkedEntries = [];
-  for (const cardId of ['promo-2', 'promo-3']) {
+  const linkedEntries = [{ id: originalCard.id }];
+  for (const cardId of ['promo-2', 'promo-3', 'promo-4', 'promo-5']) {
     const addResponse = await fetch(`${base}/api/collection`, {
       method: 'POST', headers: asUser(alice), body: JSON.stringify({ card_id: cardId, quantity: cardId === 'promo-2' ? 2 : 1 }),
     });
     assert.strictEqual(addResponse.status, 200);
-    linkedEntries.push(await db.get(`SELECT id FROM collection WHERE user_id = ? AND card_id = ?`, [alice, cardId]));
+    const added = await addResponse.json();
+    linkedEntries.push(...added.ids.map(id => ({ id })));
   }
-  for (const entry of linkedEntries) {
-    res = await fetch(`${base}/api/collection/bulk`, {
-      method: 'POST', headers: asUser(alice),
-      body: JSON.stringify({ entry_ids: [entry.id], action: 'set_sealed_unit', value: unit.id }),
-    });
-    assert.strictEqual(res.status, 200, 'linking from collection must succeed');
-  }
+  assert.strictEqual(linkedEntries.length, 6, 'the test must select all six original cards');
+  res = await fetch(`${base}/api/collection/bulk`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ entry_ids: linkedEntries.map(row => row.id), action: 'link_sealed_unit', value: { unit_id: unit.id, total: 29.99, method: 'equal' } }),
+  });
+  assert.strictEqual(res.status, 200, 'linking all original cards from the sealed page must succeed');
   const costLinkedRows = await db.all(`SELECT * FROM collection WHERE sealed_unit_id = ? AND user_id = ?`, [unit.id, alice]);
-  assert.ok(costLinkedRows.some(row => row.id === linkedEntries[0].id) && costLinkedRows.some(row => row.id === linkedEntries[1].id),
-    'collection linking must stamp the opened unit');
-  assert.ok(costLinkedRows.every(row => Math.abs(row.purchase_price - (29.99 / 3)) < 0.000001),
-    'collection-page linking must assign the same per-copy price to each selected card');
-  assert.ok(Math.abs(costLinkedRows.reduce((sum, row) => sum + row.purchase_price * row.quantity, 0) - 29.99) < 0.001,
-    'collection-page linking must split the sealed unit price across every physical linked card copy');
+  assert.strictEqual(costLinkedRows.length, 6, 'all six original cards must be linked after deleting the recipe duplicate');
+  assert.ok(costLinkedRows.some(row => row.id === linkedEntries[0].id) && costLinkedRows.some(row => row.id === linkedEntries[5].id),
+    'linking the original cards must stamp the opened unit after deleting the recipe duplicates');
+  assert.ok(costLinkedRows.every(row => row.purchase_price >= 0.28 && row.purchase_price <= 0.30),
+    'relinking six original cards must allocate only their card-equivalent share');
+  const childUnitCost = await db.get(
+    `SELECT SUM(p.unit_price * p.quantity) AS total FROM sealed_purchases p WHERE p.source_unit_id = ?`, [unit.id]
+  );
+  assert.ok(Math.abs(costLinkedRows.reduce((sum, row) => sum + row.purchase_price * row.quantity, 0) + childUnitCost.total - 29.99) < 0.000001,
+    'collection-page linking must conserve the parent sealed product cost across linked cards and child products');
   console.log('PASS: collection-page linking updates purchase prices and links cards');
 
   const boosterUnit = (await db.all(`SELECT id FROM sealed_units WHERE purchase_id = ?`, [restoredBooster.id]))[0];
@@ -180,7 +200,10 @@ async function main() {
   assert.strictEqual(res.status, 409, 'cards linked to one product must not silently move to another');
   assert.match((await res.json()).error, /already linked to another sealed product/i,
     'the conflict response must explain why linking was rejected');
-  const preservedLinks = await db.all(`SELECT id, sealed_unit_id FROM collection WHERE id IN (?, ?)`, linkedEntries.map(row => row.id));
+  const preservedLinks = await db.all(
+    `SELECT id, sealed_unit_id FROM collection WHERE id IN (${linkedEntries.map(() => '?').join(',')})`,
+    linkedEntries.map(row => row.id)
+  );
   assert.ok(preservedLinks.every(row => row.sealed_unit_id === unit.id), 'rejecting a relink must preserve the original product links');
   res = await fetch(`${base}/api/collection/${linkedEntries[0].id}`, {
     method: 'PUT', headers: asUser(alice),

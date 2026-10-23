@@ -37,10 +37,14 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
     else productComponentsByKey.set(key, { ...component, game, quantity: Math.max(1, component.quantity || 1) });
   }
   const productComponents = [...productComponentsByKey.values()];
-  const productUnitCount = productComponents.reduce((sum, component) => sum + component.quantity, 0);
-  const childUnitPrice = purchase.unit_price == null || productUnitCount === 0
+  const productCardCount = productComponents.reduce((sum, component) =>
+    sum + component.quantity * Math.max(1, Number(component.expected_cards) || 1), 0);
+  const cardUnitCount = template.components.reduce((sum, component) =>
+    sum + (component.component_type === 'card' && component.card_id ? Math.max(1, component.quantity || 1) : 0), 0);
+  const componentUnitCount = cardUnitCount + productCardCount;
+  const componentUnitPrice = purchase.unit_price == null || componentUnitCount === 0
     ? null
-    : Number(purchase.unit_price) / productUnitCount;
+    : Number(purchase.unit_price) / componentUnitCount;
   const applied = [];
 
   for (const c of template.components) {
@@ -48,7 +52,7 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
       if (!includeCards || !c.card_id) continue;
       await addCardToCollection({ id: purchase.user_id }, {
         card_id: c.card_id, quantity: c.quantity || 1, game: c.game || purchase.game,
-        sealed_unit_id: unit.id, purchase_price: null,
+        sealed_unit_id: unit.id, purchase_price: componentUnitPrice,
       });
       applied.push(c);
     }
@@ -80,8 +84,9 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
           [purchase.user_id, unit.id, c.game, name || c.product_name]
         );
       for (const row of existingRows) {
-        if (row.unit_price == null && childUnitPrice != null) {
-          await db.run(`UPDATE sealed_purchases SET unit_price = ? WHERE id = ?`, [childUnitPrice, row.id]);
+        if (row.unit_price == null && componentUnitPrice != null) {
+          const productUnitPrice = componentUnitPrice * Math.max(1, Number(c.expected_cards) || 1);
+          await db.run(`UPDATE sealed_purchases SET unit_price = ? WHERE id = ?`, [productUnitPrice, row.id]);
         }
       }
       const existingQuantity = existingRows.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
@@ -92,7 +97,8 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
            (user_id, product_id, product_name, set_name, sealed_type, game, image_url, store, purchase_date, unit_price, quantity, expected_cards, source_unit_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [purchase.user_id, c.product_id || null, name || c.product_name, setName, type, c.game || purchase.game,
-          image, `Unboxed from: ${purchase.product_name}`, unit.opened_at, childUnitPrice, qty,
+          image, `Unboxed from: ${purchase.product_name}`, unit.opened_at,
+          componentUnitPrice == null ? null : componentUnitPrice * Math.max(1, Number(c.expected_cards) || 1), qty,
           c.expected_cards == null || c.expected_cards === '' ? null : Number(c.expected_cards), unit.id]
       );
       for (let i = 0; i < qty; i++) {
