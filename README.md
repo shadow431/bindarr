@@ -341,6 +341,8 @@ A price only exists once something fetched it. The Pokémon price sweep covers t
 
 The **Sealed** page tracks purchases as individual units, so opening one booster box does not mark every identical box as opened. Pick products from the TCGplayer catalog or enter a name manually. For products with guaranteed contents, save a reusable recipe of cards and child products; opening a unit creates those components, and child products can be tracked and opened separately. Link cards to the opened unit they came from, then use the collection's Sealed Product filter to view unlinked cards or cards linked to selected units.
 
+Search purchases by product, set, store, notes, or expansion. Filters narrow the list by game, product type, purchases with sealed or opened units, and expansion. Expansions include the purchase's own set and the sets of cards or products in its recipe.
+
 Purchase cost and market value are separate. Set a per-unit value manually for any product, or refresh a catalog-linked product from TCGCSV. The sealed inventory summary totals market value only for units that are still unopened; values are not automatically refreshed in the background.
 
 ### How often prices refresh
