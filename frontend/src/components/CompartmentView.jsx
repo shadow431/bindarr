@@ -4,7 +4,7 @@ import { Lock, Edit3 } from 'lucide-react';
 import { getPrintingBadgeStyle, getPrintingBadgeLabel, getFoilOverlayClass } from '../utils/cardPrinting';
 import { getCardRarityBorder, getRarityBadgeLabel, getRarityBadgeStyle } from '../utils/cardRarity';
 import { priceText } from '../utils/formatPrice';
-import { cardTypeCategory } from '../utils/cardSort';
+import { cardTypeCategory, colorCategory } from '../utils/cardSort';
 import { isBinderType } from '../utils/cardOptions';
 import { displayName } from '../utils/languages';
 import { useLongPress } from '../utils/useLongPress';
@@ -50,16 +50,8 @@ function categoryForField(card, field, setsList = []) {
       return idx >= 0 ? `${idx + 1}. ${card.set_name}` : card.set_name;
     }
     case 'color_identity':
-    case 'color': {
-      let ci = 'Colorless';
-      if (typeof card.color_identity === 'string') {
-        try { const p = JSON.parse(card.color_identity); if (p.length > 0) ci = p[0]; } catch { /* ignore */ }
-      } else if (Array.isArray(card.color_identity) && card.color_identity.length > 0) {
-        ci = card.color_identity[0];
-      }
-      const names = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' };
-      return names[ci] || ci || 'Colorless';
-    }
+    case 'color':
+      return colorCategory(card);
     case 'type':
       return cardTypeCategory(card);
     case 'cmc':

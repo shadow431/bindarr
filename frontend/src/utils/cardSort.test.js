@@ -18,7 +18,7 @@ export async function load(url, context, next) {
 }`;
 register('data:text/javascript,' + encodeURIComponent(jsonAsModule), import.meta.url);
 
-const { sortCardsByOrder, cardTypeCategory, mtgTypeCategory } = await import('./cardSort.js');
+const { sortCardsByOrder, cardTypeCategory, mtgTypeCategory, colorCategory } = await import('./cardSort.js');
 
 const mtg = (name, typeLine, colors = []) => ({
   name, game: 'mtg', supertype: 'MTG', types: colors,
@@ -70,4 +70,26 @@ assert.deepStrictEqual(
   'Pokémon type sort keeps the energy-type order'
 );
 
-console.log('PASS: cardSort type sort and grouping');
+// --- Colour sort (the collection view's "Color" option) ----------------------
+// Since 'type' means card type for Magic, colour has its own sort, bucketed the
+// way storage files by colour: WUBRG, then Multicolor, then Colorless.
+assert.strictEqual(colorCategory({ color_identity: ['Red', 'White'] }), 'Multicolor', 'a Boros card is Multicolor, not Red');
+assert.strictEqual(colorCategory({ color_identity: '["U"]' }), 'Blue', 'letters from a JSON string map to colour names');
+assert.strictEqual(colorCategory({ color_identity: [] }), 'Colorless');
+assert.strictEqual(colorCategory({}), 'Colorless', 'a Pokémon card has no colour identity');
+const colourCards = [
+  { name: 'Sol Ring', color_identity: [] },
+  { name: 'Lightning Helix', color_identity: ['Red', 'White'] },
+  { name: 'Shock', color_identity: ['Red'] },
+  { name: 'Giant Growth', color_identity: ['Green'] },
+  { name: 'Counterspell', color_identity: ['Blue'] },
+  { name: 'Swords to Plowshares', color_identity: ['White'] },
+  { name: 'Duress', color_identity: ['Black'] },
+];
+assert.deepStrictEqual(
+  sortCardsByOrder(colourCards, [{ by: 'color', dir: 'asc' }, { by: 'name', dir: 'asc' }]).map(c => c.name),
+  ['Swords to Plowshares', 'Counterspell', 'Duress', 'Shock', 'Giant Growth', 'Lightning Helix', 'Sol Ring'],
+  'colour sort: W, U, B, R, G, then Multicolor, then Colorless'
+);
+
+console.log('PASS: cardSort type, colour sort and grouping');

@@ -48,6 +48,20 @@ export function cardTypeCategory(card) {
   return typeCategory(asList(card && card.types));
 }
 
+const COLOR_NAMES = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' };
+
+// Colour-identity bucket: one colour, Multicolor or Colorless. Mirrors
+// getColorCategory in the backend, so a colour sort shown here lines up with
+// how storage files by colour (WUBRG, then Multicolor, then Colorless).
+export function colorCategory(card) {
+  const raw = card && card.color_identity;
+  let ci = asList(raw);
+  if (ci.length === 0 && typeof raw === 'string' && raw && !raw.startsWith('[')) ci = [raw];
+  if (ci.length === 0) return 'Colorless';
+  if (ci.length > 1) return 'Multicolor';
+  return COLOR_NAMES[ci[0]] || ci[0] || 'Colorless';
+}
+
 function typeRank(card) {
   const order = isMtgCard(card) ? MTG_CARD_TYPE_ORDER : POKEMON_TYPE_ORDER;
   return order[cardTypeCategory(card)] || 50;
@@ -144,18 +158,10 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           break;
         case 'color_identity':
         case 'color': {
-          let cA = 'Colorless';
-          if (typeof a.color_identity === 'string') {
-            try { const p = JSON.parse(a.color_identity); if (p.length > 0) cA = p[0]; } catch { /* ignore */ }
-          } else if (Array.isArray(a.color_identity) && a.color_identity.length > 0) {
-            cA = a.color_identity[0];
-          }
-          let cB = 'Colorless';
-          if (typeof b.color_identity === 'string') {
-            try { const p = JSON.parse(b.color_identity); if (p.length > 0) cB = p[0]; } catch { /* ignore */ }
-          } else if (Array.isArray(b.color_identity) && b.color_identity.length > 0) {
-            cB = b.color_identity[0];
-          }
+          // Bucketed the way the backend files (a Boros card is Multicolor, not
+          // Red); this used to take the first colour of the identity.
+          const cA = colorCategory(a);
+          const cB = colorCategory(b);
           cmp = (cardOrder.wubrg[cA] || 99) - (cardOrder.wubrg[cB] || 99);
           if (cmp === 0) cmp = cA.localeCompare(cB);
           break;
