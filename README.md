@@ -327,7 +327,7 @@ Which marketplace can price a printing depends on where it is sold, so the sourc
 
 | Card | Priced from |
 | --- | --- |
-| Magic, any language | Scryfall — TCGplayer's USD price, or Cardmarket's EUR one when TCGplayer has no listing (most non-English printings) |
+| Magic, any language | Scryfall — TCGplayer's USD price, or Cardmarket's EUR one when TCGplayer has no listing (most non-English printings). **Admin → Instance Settings → Magic price source** flips this to Cardmarket EUR first, TCGplayer USD as the fallback |
 | Pokémon via pokemontcgapi.com | Cardmarket EUR when available, otherwise TCGplayer USD, for the printing's language |
 | Pokémon via existing providers, English or Japanese | TCGplayer, via TCGCSV, in USD |
 | Pokémon via existing providers, other languages | the **English** printing's TCGplayer price, labelled as such — TCGplayer runs no German, Korean or Chinese catalogue |

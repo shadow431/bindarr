@@ -189,6 +189,40 @@ function langSearch(q, lang) {
   return { q: `${q} lang:${code}`, params: '&include_multilingual=true' };
 }
 
+// Which marketplace's price normalizeCard reads first: 'tcgplayer' (Scryfall's
+// `usd`) or 'cardmarket' (`eur`). An instance setting, not a per-user one,
+// because card_cache is shared — one row per printing, priced once for everyone.
+//
+// Held in memory rather than read per card because normalizeCard is synchronous
+// and called from a dozen places, several of them in tight loops over a page of
+// 175 cards; making it async to read one settings column would ripple through
+// every caller for a value that changes about once in an install's life. It is
+// loaded at startup (server.js) and set again by the settings route the moment
+// an admin changes it. Until loaded it is 'tcgplayer', which is both the column
+// default and the behaviour before the setting existed.
+const MTG_PRICE_SOURCES = ['tcgplayer', 'cardmarket'];
+let mtgPriceSource = 'tcgplayer';
+
+function setPriceSource(source) {
+  mtgPriceSource = MTG_PRICE_SOURCES.includes(source) ? source : 'tcgplayer';
+  return mtgPriceSource;
+}
+
+function getPriceSource() {
+  return mtgPriceSource;
+}
+
+// Never throws: an unreadable setting leaves the default in place, and boot must
+// not stall on a price preference.
+async function loadPriceSource() {
+  try {
+    const row = await db.get(`SELECT mtg_price_source FROM app_settings WHERE id = 1`);
+    return setPriceSource(row && row.mtg_price_source);
+  } catch {
+    return mtgPriceSource;
+  }
+}
+
 // Maps a raw Scryfall card onto the card_cache shape the rest of the app (and
 // the Pokémon path) already speaks. Double-faced cards carry their art/type on
 // card_faces[0] instead of the top level, so fall back to the front face.
@@ -203,7 +237,10 @@ function normalizeCard(raw, lang) {
   const imgSrc = raw.image_uris || face.image_uris || {};
   const typeLine = raw.type_line || face.type_line || '';
   const colors = raw.colors || face.colors || [];
-  // USD first, then EUR — and never a mix of the two in one row.
+  // The preferred currency first, then the other — and never a mix of the two in
+  // one row. USD (TCGplayer) is preferred unless an admin chose Cardmarket in
+  // Instance Settings (#93), in which case this is the exact mirror image: EUR
+  // first, USD only for a printing Cardmarket has no quote for.
   //
   // Scryfall quotes `usd` from TCGplayer and `eur` from Cardmarket, and which one it
   // has depends on where the printing is actually sold. TCGplayer lists English
@@ -218,13 +255,23 @@ function normalizeCard(raw, lang) {
   // hardcoded one silently misprices a collection. Falling back per row also keeps
   // every column in a row in ONE currency — a normal price in USD next to a foil
   // price in EUR would make the pair meaningless.
+  //
+  // A currency counts as "quoted" when either its normal or its foil price exists,
+  // and the whole row then comes from it: a foil-only USD quote beats a normal EUR
+  // one under the USD preference, so the pair stays one unit.
   const prices = raw.prices || {};
   const money = (v) => (v != null ? parseFloat(v) : null);
-  const eurOnly = money(prices.usd) == null && money(prices.usd_foil) == null
-    && (money(prices.eur) != null || money(prices.eur_foil) != null);
-  const currency = eurOnly ? 'EUR' : 'USD';
-  const usd = eurOnly ? money(prices.eur) : money(prices.usd);
-  const usdFoil = eurOnly ? money(prices.eur_foil) : money(prices.usd_foil);
+  const quotes = {
+    USD: [money(prices.usd), money(prices.usd_foil)],
+    EUR: [money(prices.eur), money(prices.eur_foil)],
+  };
+  const has = (cur) => quotes[cur][0] != null || quotes[cur][1] != null;
+  const preferred = mtgPriceSource === 'cardmarket' ? 'EUR' : 'USD';
+  const other = preferred === 'EUR' ? 'USD' : 'EUR';
+  // With neither quoted, the row is unpriced in the preferred currency — the same
+  // label the USD path has always given an unpriced card.
+  const currency = !has(preferred) && has(other) ? other : preferred;
+  const [normal, foil] = quotes[currency];
   const cmc = raw.cmc != null ? parseFloat(raw.cmc) : null;
   const colorIdentity = raw.color_identity || face.color_identity || [];
 
@@ -241,9 +288,9 @@ function normalizeCard(raw, lang) {
     set_name: raw.set_name || '',
     number: raw.collector_number || '',
     image_url: imgSrc.normal || imgSrc.large || imgSrc.small || '',
-    price_trend: usd != null ? usd : (usdFoil != null ? usdFoil : 0),
-    price_normal: usd,
-    price_holofoil: usdFoil,
+    price_trend: normal != null ? normal : (foil != null ? foil : 0),
+    price_normal: normal,
+    price_holofoil: foil,
     price_reverse_holofoil: null,
     price_avg1: null,
     price_avg7: null,
@@ -274,7 +321,7 @@ function normalizeCard(raw, lang) {
     // to link at: it is the one TCGplayer actually sells for that printing.
     tcgplayer_product_id: raw.tcgplayer_id ?? raw.tcgplayer_etched_id ?? null,
     // Scryfall's `prices.usd` is TCGplayer's number and `prices.eur` Cardmarket's,
-    // so the currency names the marketplace too (see the fallback above).
+    // so the currency names the marketplace too (see the preference above).
     price_source: 'scryfall',
     price_currency: currency
   };
@@ -701,6 +748,33 @@ async function updateCollectionPrices(force = false) {
   }
 }
 
+// Re-price card_cache after an admin changes the MTG price source. Call it after
+// setPriceSource; it is slow (network) and the settings route does not wait on it.
+//
+// Two halves, because card_cache holds two very different populations:
+//
+//   · Owned and decked cards are what collection totals, the dashboard and net
+//     worth read, so they are re-fetched now — the ordinary sweep, forced past its
+//     daily gate (and past price_refresh_days = 0: without this one run, a
+//     collection would stay in the old currency until refreshes were re-enabled).
+//   · Everything else — search results and whole cached sets, 100k+ rows on a
+//     busy install — is NOT re-fetched. At /cards/collection's 2 requests a second
+//     that is twenty minutes of the one queue search shares. Rows still in the old
+//     currency are stamped stale instead, so runSearch's existing background
+//     refresh re-prices each one the next time a search shows it. Each row carries
+//     its own currency meanwhile, so nothing is mislabelled, only not yet switched.
+//
+// The stamp runs first so the sweep's fresh timestamps on owned cards win.
+async function repriceForSourceChange() {
+  const want = mtgPriceSource === 'cardmarket' ? 'EUR' : 'USD';
+  await db.run(
+    `UPDATE card_cache SET last_updated = '1970-01-01 00:00:00'
+      WHERE game = 'mtg' AND COALESCE(price_currency, 'USD') <> ?`,
+    [want]
+  );
+  await updateCollectionPrices(true);
+}
+
 // The same printing in another language, or null.
 //
 // Scanning identifies a card from ARTWORK, which is identical in every language,
@@ -759,4 +833,5 @@ async function getCardById(cardId) {
 
 // `client` and `fetchWindow` are exported for tests (stub the axios adapter),
 // mirroring how tcgApi exposes tcgClient.
-module.exports = { searchCards, normalizeCard, cacheCards, getCardsBySet, fetchAndCacheSets, updateCollectionPrices, getCardById, getPrintingInLang, scryGetRetried, bulkFetchByIdentifier, client, fetchWindow };
+module.exports = { searchCards, normalizeCard, cacheCards, getCardsBySet, fetchAndCacheSets, updateCollectionPrices, getCardById, getPrintingInLang, scryGetRetried, bulkFetchByIdentifier, client, fetchWindow,
+  setPriceSource, getPriceSource, loadPriceSource, repriceForSourceChange, MTG_PRICE_SOURCES };
