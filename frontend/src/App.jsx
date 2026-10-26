@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import { LayoutDashboard, Database, MapPin, Sparkles, Settings as SettingsIcon, LogOut, ShieldAlert, Plus, Swords, StickyNote } from 'lucide-react';
 import Login from './components/Login';
 import Logo from './components/Logo';
@@ -179,22 +179,42 @@ function App() {
     }
   }, [toast]);
 
-  // Icons-only fallback for the tab bar. The CSS breakpoints hide labels at the
-  // widths where English labels at the default font stop fitting, but Android's
-  // system font scale and longer translations (German, Russian) run out of room
-  // well before that — and no media query can see either. So measure: if the
-  // bar overflows or a label is cut off, add .nav-compact (same rule as the
-  // narrow breakpoints: icons only, except the active tab). The class is
-  // dropped before measuring so the bar can grow back when there is room.
+  // Fit the tab bar by measuring, not by breakpoint. How much room the tabs
+  // need depends on Android's system font scale (the WebView honours it), the
+  // language (German and Russian labels run long) and whether the admin tab is
+  // shown — no media query can see any of that. Each pass starts from the
+  // least compact state, so widening the window brings labels and the greeting
+  // back, then steps down only while something still doesn't fit:
+  //   .nav-tight on the header   -> greeting hidden (top bar only, index.css)
+  //   .nav-compact on the bar    -> icons only, except the active tab
+  //   .nav-tighter on the header -> "Bindarr" wordmark hidden, mark stays
+  //                                 (top bar only)
+  // and past that the bar's hidden-scrollbar overflow is the last resort.
+  // Layout effect + classList (no state): measured and settled before paint,
+  // so there is no flash and no re-render.
   const navRef = useRef(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
+    const header = nav.closest('.app-header');
+    const fits = () => nav.scrollWidth <= nav.clientWidth + 1
+      && ![...nav.querySelectorAll('.nav-tab-label')].some(l => l.scrollWidth > l.clientWidth + 1);
+    const steps = [[header, 'nav-tight'], [nav, 'nav-compact'], [header, 'nav-tighter']];
+    const step = () => {
+      for (const [el, cls] of steps) el?.classList.remove(cls);
+      for (const [el, cls] of steps) {
+        if (fits()) return;
+        el?.classList.add(cls);
+      }
+    };
+    // Tabs transition their padding; .nav-measuring switches that off so each
+    // fits() reads the real size, and the settled layout is flushed before it
+    // is switched back on so nothing animates afterwards.
     const check = () => {
-      nav.classList.remove('nav-compact');
-      const cut = nav.scrollWidth > nav.clientWidth + 1
-        || [...nav.querySelectorAll('.nav-tab-label')].some(l => l.scrollWidth > l.clientWidth + 1);
-      nav.classList.toggle('nav-compact', cut);
+      nav.classList.add('nav-measuring');
+      step();
+      void nav.offsetWidth;
+      nav.classList.remove('nav-measuring');
     };
     check();
     window.addEventListener('resize', check);
@@ -444,7 +464,7 @@ function App() {
           )}
         </nav>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div className="header-actions" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <div className="header-greeting" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
             <Sparkles size={14} style={{ color: 'var(--accent-yellow)' }} />
             <span>{t('header.greeting')} <strong style={{ color: 'var(--text-strong)' }}>{user.username}</strong> ({t(`role.${user.role}`)})</span>
