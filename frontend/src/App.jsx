@@ -179,6 +179,30 @@ function App() {
     }
   }, [toast]);
 
+  // Icons-only fallback for the tab bar. The CSS breakpoints hide labels at the
+  // widths where English labels at the default font stop fitting, but Android's
+  // system font scale and longer translations (German, Russian) run out of room
+  // well before that — and no media query can see either. So measure: if the
+  // bar overflows or a label is cut off, add .nav-compact (same rule as the
+  // narrow breakpoints: icons only, except the active tab). The class is
+  // dropped before measuring so the bar can grow back when there is room.
+  const navRef = useRef(null);
+  useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const check = () => {
+      nav.classList.remove('nav-compact');
+      const cut = nav.scrollWidth > nav.clientWidth + 1
+        || [...nav.querySelectorAll('.nav-tab-label')].some(l => l.scrollWidth > l.clientWidth + 1);
+      nav.classList.toggle('nav-compact', cut);
+    };
+    check();
+    window.addEventListener('resize', check);
+    // Web fonts change label widths after first paint.
+    document.fonts?.ready.then(check).catch(() => {});
+    return () => window.removeEventListener('resize', check);
+  }, [token, user, activeTab, t]);
+
   // Offer first-run setup to an admin until it is finished or skipped. The flag
   // lives on the server, so closing the wizard halfway resumes it at the next
   // login on any device; everything it configures is also reachable from Settings
@@ -337,72 +361,91 @@ function App() {
           <h1 className="logo-text">Bind<span>arr</span></h1>
         </div>
 
-        {/* Navigation Tabs (Nested inside header for unified layout) */}
-        <nav className="nav-tabs" style={{ margin: 0 }}>
+        {/* Navigation Tabs (Nested inside header for unified layout). Each tab
+            carries its name as aria-label/title: on narrow screens, or when the
+            labels don't fit (navRef check above), the label span is hidden for
+            all but the active tab (index.css). */}
+        <nav ref={navRef} className="nav-tabs" style={{ margin: 0 }}>
           <button 
             className={`nav-tab ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => goTab('dashboard')}
+            aria-label={t('nav.dashboard')}
+            title={t('nav.dashboard')}
           >
             <LayoutDashboard size={18} />
-            <span>{t('nav.dashboard')}</span>
+            <span className="nav-tab-label">{t('nav.dashboard')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'add-cards' ? 'active' : ''}`}
             onClick={() => goTab('add-cards')}
+            aria-label={t('nav.addCards')}
+            title={t('nav.addCards')}
           >
             <Plus size={18} />
-            <span>{t('nav.addCards')}</span>
+            <span className="nav-tab-label">{t('nav.addCards')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'collection' ? 'active' : ''}`}
             onClick={() => goTab('collection')}
+            aria-label={t('nav.collection')}
+            title={t('nav.collection')}
           >
             <Database size={18} />
-            <span>{t('nav.collection')}</span>
+            <span className="nav-tab-label">{t('nav.collection')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'storage' ? 'active' : ''}`}
             onClick={() => goTab('storage')}
+            aria-label={t('nav.storage')}
+            title={t('nav.storage')}
           >
             <MapPin size={18} />
-            <span>{t('nav.storage')}</span>
+            <span className="nav-tab-label">{t('nav.storage')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'deckbuilder' ? 'active' : ''}`}
             onClick={() => goTab('deckbuilder')}
+            aria-label={t('nav.deckBuilder')}
+            title={t('nav.deckBuilder')}
           >
             <Swords size={18} />
-            <span>{t('nav.deckBuilder')}</span>
+            <span className="nav-tab-label">{t('nav.deckBuilder')}</span>
           </button>
 
           <button
             className={`nav-tab ${activeTab === 'notes' ? 'active' : ''}`}
             onClick={() => goTab('notes')}
+            aria-label={t('nav.notes')}
+            title={t('nav.notes')}
           >
             <StickyNote size={18} />
-            <span>{t('nav.notes')}</span>
+            <span className="nav-tab-label">{t('nav.notes')}</span>
           </button>
 
           <button
             className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => goTab('settings')}
+            aria-label={t('nav.settings')}
+            title={t('nav.settings')}
           >
             <SettingsIcon size={18} />
-            <span>{t('nav.settings')}</span>
+            <span className="nav-tab-label">{t('nav.settings')}</span>
           </button>
           {user.role === 'admin' && (
             <button 
               className={`nav-tab ${activeTab === 'admin' ? 'active' : ''}`}
               onClick={() => goTab('admin')}
+              aria-label={t('nav.admin')}
+              title={t('nav.admin')}
             >
               <ShieldAlert size={18} style={{ color: 'var(--accent-red)' }} />
-              <span>{t('nav.admin')}</span>
+              <span className="nav-tab-label">{t('nav.admin')}</span>
             </button>
           )}
         </nav>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+          <div className="header-greeting" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
             <Sparkles size={14} style={{ color: 'var(--accent-yellow)' }} />
             <span>{t('header.greeting')} <strong style={{ color: 'var(--text-strong)' }}>{user.username}</strong> ({t(`role.${user.role}`)})</span>
           </div>
