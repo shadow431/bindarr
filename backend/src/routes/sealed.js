@@ -151,6 +151,42 @@ router.get('/sealed/purchases', async (req, res) => {
         ORDER BY p.purchase_date DESC, p.created_at DESC`,
       [req.user.id]
     );
+    const expansionRows = await db.all(
+      `SELECT p.id AS purchase_id, NULLIF(TRIM(p.set_name), '') AS expansion
+         FROM sealed_purchases p
+        WHERE p.user_id = ? AND NULLIF(TRIM(p.set_name), '') IS NOT NULL
+       UNION
+       SELECT parent.id AS purchase_id, NULLIF(TRIM(child.set_name), '') AS expansion
+         FROM sealed_purchases parent
+         JOIN sealed_units unit ON unit.purchase_id = parent.id
+         JOIN sealed_purchases child ON child.source_unit_id = unit.id AND child.user_id = parent.user_id
+        WHERE parent.user_id = ? AND NULLIF(TRIM(child.set_name), '') IS NOT NULL
+       UNION
+       SELECT p.id AS purchase_id, NULLIF(TRIM(card.set_name), '') AS expansion
+         FROM sealed_purchases p
+         JOIN sealed_templates template ON template.id = p.template_id
+         JOIN sealed_template_components component ON component.template_id = template.id AND component.component_type = 'card'
+         JOIN card_cache card ON card.id = component.card_id
+        WHERE p.user_id = ? AND NULLIF(TRIM(card.set_name), '') IS NOT NULL
+       UNION
+       SELECT p.id AS purchase_id, NULLIF(TRIM(catalog.group_name), '') AS expansion
+         FROM sealed_purchases p
+         JOIN sealed_templates template ON template.id = p.template_id
+         JOIN sealed_template_components component ON component.template_id = template.id
+          AND component.component_type = 'product' AND component.product_id IS NOT NULL
+         JOIN tcgplayer_catalog catalog ON catalog.product_id = component.product_id
+        WHERE p.user_id = ? AND NULLIF(TRIM(catalog.group_name), '') IS NOT NULL`,
+      [req.user.id, req.user.id, req.user.id, req.user.id]
+    );
+    const expansionsByPurchase = new Map();
+    for (const row of expansionRows) {
+      const expansions = expansionsByPurchase.get(row.purchase_id) || new Set();
+      expansions.add(row.expansion);
+      expansionsByPurchase.set(row.purchase_id, expansions);
+    }
+    for (const purchase of purchases) {
+      purchase.expansions = [...(expansionsByPurchase.get(purchase.id) || [])].sort((a, b) => a.localeCompare(b));
+    }
     res.json({ purchases });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sealed purchases', message: error.message });
@@ -375,10 +411,17 @@ router.put('/sealed/units/:id/open', async (req, res) => {
       );
       if (opened) {
         const purchase = await db.get(`SELECT * FROM sealed_purchases WHERE id = ?`, [unit.purchase_id]);
-        if (purchase?.template_id) {
-          const template = await db.get(`SELECT * FROM sealed_templates WHERE id = ?`, [purchase.template_id]);
+        let template = purchase?.template_id
+          ? await db.get(`SELECT * FROM sealed_templates WHERE id = ?`, [purchase.template_id])
+          : null;
+        if (template) {
+          template.components = await db.all(`SELECT * FROM sealed_template_components WHERE template_id = ?`, [template.id]);
+        } else if (purchase) {
+          template = await matchTemplate(purchase.user_id, purchase.product_id, purchase.product_name);
+          if (template) await db.run(`UPDATE sealed_purchases SET template_id = ? WHERE id = ?`, [template.id, purchase.id]);
+        }
+        {
           if (template) {
-            template.components = await db.all(`SELECT * FROM sealed_template_components WHERE template_id = ?`, [template.id]);
             const freshUnit = await db.get(`SELECT * FROM sealed_units WHERE id = ?`, [unit.id]);
             const newlyApplied = await applyTemplateComponents(freshUnit, purchase, template, {
               includeCards: !unit.components_applied_at,
@@ -554,6 +597,18 @@ router.post('/sealed/templates', async (req, res) => {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
              [templateId, c.component_type, qty, c.card_id || null, c.product_name || null, c.sealed_type || null, c.product_id || null, c.game || null,
               c.expected_cards == null || c.expected_cards === '' ? null : Math.max(0, parseInt(c.expected_cards, 10) || 0)]
+        );
+      }
+      // Attach purchases made before this recipe existed (e.g. imports).
+      if (product_id) {
+        await db.run(
+          `UPDATE sealed_purchases SET template_id = ? WHERE user_id = ? AND template_id IS NULL AND product_id = ?`,
+          [templateId, req.user.id, product_id]
+        );
+      } else {
+        await db.run(
+          `UPDATE sealed_purchases SET template_id = ? WHERE user_id = ? AND template_id IS NULL AND product_id IS NULL AND product_name = ?`,
+          [templateId, req.user.id, String(product_name).trim()]
         );
       }
       return db.get(`SELECT * FROM sealed_templates WHERE id = ?`, [templateId]);

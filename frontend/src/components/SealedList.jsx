@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Plus, Package, ChevronDown, ChevronUp, Unlock, Lock, Trash2, X, Pencil, RefreshCw } from 'lucide-react';
 import { useT } from '../utils/i18n';
-import { gameLabel } from '../utils/games';
+import { gameLabel, gameOptions } from '../utils/games';
 import { formatPrice } from '../utils/formatPrice';
 import SealedPurchaseForm from './SealedPurchaseForm';
 import PackPriceSplitter from './PackPriceSplitter';
+import MultiSelectDropdown from './MultiSelectDropdown';
 
 // Loose match on a sealed product's TCGplayer group name against a card's own
 // set name ('SV: Scarlet & Violet 151' vs 'Scarlet & Violet 151') — punctuation
@@ -321,6 +322,11 @@ export default function SealedList({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingPurchase, setEditingPurchase] = useState(null);
+  const [search, setSearch] = useState('');
+  const [gameFilter, setGameFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [expansionFilter, setExpansionFilter] = useState([]);
 
   const load = () => {
     setLoading(true);
@@ -338,6 +344,30 @@ export default function SealedList({ showToast }) {
   const hasMarketValue = purchases.some(p => p.market_value != null && p.sealed_count > 0);
   const totalSealed = purchases.reduce((s, p) => s + (p.sealed_count || 0), 0);
   const totalOpened = purchases.reduce((s, p) => s + (p.opened_count || 0), 0);
+  const productTypes = [...new Set(purchases.map(p => p.sealed_type).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const expansions = [...new Set(purchases.flatMap(p => p.expansions || []))].sort((a, b) => a.localeCompare(b));
+  const query = search.trim().toLocaleLowerCase();
+  const filteredPurchases = purchases.filter(purchase => {
+    const searchable = [
+      purchase.product_name, purchase.set_name, purchase.sealed_type, purchase.store,
+      purchase.notes, purchase.contents_note, ...(purchase.expansions || []),
+    ].filter(Boolean).join(' ').toLocaleLowerCase();
+    if (query && !searchable.includes(query)) return false;
+    if (gameFilter && purchase.game !== gameFilter) return false;
+    if (typeFilter && purchase.sealed_type !== typeFilter) return false;
+    if (statusFilter === 'sealed' && !(purchase.sealed_count > 0)) return false;
+    if (statusFilter === 'opened' && !(purchase.opened_count > 0)) return false;
+    if (expansionFilter.length && !expansionFilter.some(expansion => (purchase.expansions || []).includes(expansion))) return false;
+    return true;
+  });
+  const hasFilters = !!(search || gameFilter || typeFilter || statusFilter || expansionFilter.length);
+  const clearFilters = () => {
+    setSearch('');
+    setGameFilter('');
+    setTypeFilter('');
+    setStatusFilter('');
+    setExpansionFilter([]);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -356,6 +386,44 @@ export default function SealedList({ showToast }) {
         <span>{t('sealed.sealedLabel')}: <strong style={{ color: 'var(--text-strong)' }}>{totalSealed}</strong></span>
         <span>{t('sealed.openedLabel')}: <strong style={{ color: 'var(--text-strong)' }}>{totalOpened}</strong></span>
       </div>
+
+      {purchases.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 2fr) repeat(auto-fit, minmax(145px, 1fr))', gap: '0.6rem', alignItems: 'center' }}>
+          <input
+            type="search"
+            className="input-control"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder={t('sealed.searchPlaceholder')}
+            aria-label={t('sealed.searchPlaceholder')}
+          />
+          <select className="select-control" value={gameFilter} onChange={e => setGameFilter(e.target.value)} aria-label={t('sealed.filterGame')}>
+            <option value="">{t('sealed.allGames')}</option>
+            {gameOptions().map(game => <option key={game.value} value={game.value}>{game.label}</option>)}
+          </select>
+          <select className="select-control" value={typeFilter} onChange={e => setTypeFilter(e.target.value)} aria-label={t('sealed.filterType')}>
+            <option value="">{t('sealed.allTypes')}</option>
+            {productTypes.map(type => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <select className="select-control" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label={t('sealed.filterStatus')}>
+            <option value="">{t('sealed.allStatuses')}</option>
+            <option value="sealed">{t('sealed.hasSealedUnits')}</option>
+            <option value="opened">{t('sealed.hasOpenedUnits')}</option>
+          </select>
+          <MultiSelectDropdown
+            label={t('sealed.filterExpansion')}
+            allLabel={t('sealed.allExpansions')}
+            value={expansionFilter}
+            onChange={setExpansionFilter}
+            options={expansions.map(expansion => ({ value: expansion, label: expansion }))}
+          />
+          {hasFilters && (
+            <button type="button" className="btn btn-secondary" onClick={clearFilters}>
+              <X size={14} /> {t('collection.clearFilters')}
+            </button>
+          )}
+        </div>
+      )}
 
       {(showForm || editingPurchase) && (
         <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}
@@ -377,9 +445,13 @@ export default function SealedList({ showToast }) {
         <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
           {t('sealed.empty')}
         </div>
+      ) : filteredPurchases.length === 0 ? (
+        <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+          {t('sealed.noFilterMatches')}
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-          {purchases.map(p => (
+          {filteredPurchases.map(p => (
             <PurchaseCard key={p.id} purchase={p} onChanged={load} onEdit={setEditingPurchase} showToast={showToast} />
           ))}
         </div>

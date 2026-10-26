@@ -116,11 +116,18 @@ async function main() {
   const subPurchases = await db.all(`SELECT * FROM sealed_purchases WHERE source_unit_id = ?`, [unit.id]);
   assert.strictEqual(subPurchases.length, 2, 'both product components must become their own sealed purchases');
   const boosterPurchase = subPurchases.find(p => p.product_name === 'Booster Pack');
+  const preconPurchase = subPurchases.find(p => p.product_name === 'Precon Deck');
+  await db.run(`UPDATE sealed_purchases SET set_name = CASE id WHEN ? THEN ? WHEN ? THEN ? END WHERE id IN (?, ?)`,
+    [boosterPurchase.id, 'Booster Expansion', preconPurchase.id, 'Deck Expansion', boosterPurchase.id, preconPurchase.id]);
+  const purchasesResponse = await fetch(`${base}/api/sealed/purchases`, { headers: asUser(alice) });
+  const { purchases: listedPurchases } = await purchasesResponse.json();
+  const listedParent = listedPurchases.find(row => row.id === purchase.id);
+  assert.deepStrictEqual(new Set(listedParent.expansions), new Set(['Build & Battle', 'Booster Expansion', 'Deck Expansion']),
+    'a sealed box must expose its own and contained card/product expansions for filtering');
   assert.strictEqual(boosterPurchase.quantity, 4, 'the booster sub-purchase must carry the component quantity');
   assert.strictEqual(boosterPurchase.expected_cards, 10, 'the spawned pack must inherit its configured expected-card limit');
   assert.ok(Math.abs(boosterPurchase.unit_price - (29.99 / 101 * 10)) < 0.000001,
     'each booster unit must receive cost for its expected cards');
-  const preconPurchase = subPurchases.find(p => p.product_name === 'Precon Deck');
   assert.ok(Math.abs(preconPurchase.unit_price - (29.99 / 101 * 60)) < 0.000001,
     'each spawned product unit must receive cost for its expected cards');
   const boosterUnits = await db.all(`SELECT * FROM sealed_units WHERE purchase_id = ?`, [boosterPurchase.id]);
