@@ -306,8 +306,17 @@ router.get('/stats/history', async (req, res) => {
     let historyByCard = {};
     if (cardIds.length > 0) {
       const placeholders = cardIds.map(() => '?').join(',');
+      // Only points in the card's current currency. After a currency switch (the
+      // admin's MTG price source, #93) the old points are a different unit, and
+      // mixing them in would draw the switch as a price move. Dropping them makes
+      // the card's earliest point in the new currency carry backward instead —
+      // the same rule realPriceAt already applies to any card with short history.
       const historyRows = await db.all(
-        `SELECT card_id, price, recorded_at FROM price_history WHERE card_id IN (${placeholders}) ORDER BY recorded_at ASC`,
+        `SELECT ph.card_id, ph.price, ph.recorded_at FROM price_history ph
+           JOIN card_cache cc ON cc.id = ph.card_id
+          WHERE ph.card_id IN (${placeholders})
+            AND (ph.currency IS NULL OR ph.currency = COALESCE(cc.price_currency, 'USD'))
+          ORDER BY ph.recorded_at ASC`,
         cardIds
       );
       historyRows.forEach(r => {
@@ -484,17 +493,21 @@ router.get('/cards/:id/price-history', async (req, res) => {
   const rangeKey = String(req.query.range || '30d').toLowerCase();
   const days = PRICE_HISTORY_RANGES[rangeKey]; // undefined => 'all'
   try {
+    // Points in the card's current currency only — see the same filter in the
+    // timeline above. A card with no card_cache row keeps every point.
+    const sameCurrency = `(currency IS NULL OR currency = COALESCE(
+      (SELECT price_currency FROM card_cache WHERE id = price_history.card_id), currency))`;
     const recorded = days
       ? await db.all(`
           SELECT price, recorded_at
           FROM price_history
-          WHERE card_id = ? AND recorded_at >= datetime('now', ?)
+          WHERE card_id = ? AND recorded_at >= datetime('now', ?) AND ${sameCurrency}
           ORDER BY recorded_at ASC
         `, [id, `-${days} days`])
       : await db.all(`
           SELECT price, recorded_at
           FROM price_history
-          WHERE card_id = ?
+          WHERE card_id = ? AND ${sameCurrency}
           ORDER BY recorded_at ASC
         `, [id]);
 

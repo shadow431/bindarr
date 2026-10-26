@@ -61,13 +61,14 @@ router.get('/version', async (req, res) => {
 
 async function getEffectiveSettings() {
   const row = await db.get(`
-    SELECT public_base_url, pokemon_provider, price_refresh_days,
+    SELECT public_base_url, pokemon_provider, mtg_price_source, price_refresh_days,
            scan_exclude_tokens, scan_exclude_art_cards, scan_exclude_jumpstart, scan_exclude_promos,
            scan_exclude_digital, setup_complete
     FROM app_settings WHERE id = 1
   `);
   const public_base_url = (row && row.public_base_url) || process.env.PUBLIC_BASE_URL || '';
   const pokemon_provider = (row && row.pokemon_provider) || 'pokemontcg';
+  const mtg_price_source = row && row.mtg_price_source === 'cardmarket' ? 'cardmarket' : 'tcgplayer';
   const scan_exclude_tokens = !!(row && row.scan_exclude_tokens);
   const scan_exclude_art_cards = !!(row && row.scan_exclude_art_cards);
   const scan_exclude_jumpstart = !!(row && row.scan_exclude_jumpstart);
@@ -83,6 +84,7 @@ async function getEffectiveSettings() {
   return {
     public_base_url,
     pokemon_provider,
+    mtg_price_source,
     price_refresh_days,
     scan_exclude_tokens,
     scan_exclude_art_cards,
@@ -108,6 +110,7 @@ router.put('/', requireAdmin, async (req, res) => {
   const {
     public_base_url,
     pokemon_provider,
+    mtg_price_source,
     price_refresh_days,
     scan_exclude_tokens,
     scan_exclude_art_cards,
@@ -116,6 +119,35 @@ router.put('/', requireAdmin, async (req, res) => {
     scan_exclude_digital,
     setup_complete,
   } = req.body;
+
+  // Validated before anything is written, so a bad value cannot leave the other
+  // fields of the same save half-applied. Rejected rather than coerced (unlike
+  // pokemon_provider): silently falling back to TCGplayer on a typo would look,
+  // from the admin's side, like the setting not working.
+  const scryfallApi = require('../scryfallApi');
+  if (mtg_price_source !== undefined && !scryfallApi.MTG_PRICE_SOURCES.includes(mtg_price_source)) {
+    return res.status(400).json({ error: `MTG price source must be one of: ${scryfallApi.MTG_PRICE_SOURCES.join(', ')}.` });
+  }
+  if (mtg_price_source !== undefined) {
+    try {
+      const before = await db.get(`SELECT mtg_price_source FROM app_settings WHERE id = 1`);
+      await db.run(`UPDATE app_settings SET mtg_price_source = ? WHERE id = 1`, [mtg_price_source]);
+      // Takes effect for every card normalized from here on (normalizeCard reads
+      // the in-memory copy), then re-prices what is already cached so collections
+      // switch currency too. In the background: it is a Scryfall sweep, and the
+      // admin's save should not wait on it.
+      scryfallApi.setPriceSource(mtg_price_source);
+      if (((before && before.mtg_price_source) || 'tcgplayer') !== mtg_price_source) {
+        console.log(`MTG price source changed to ${mtg_price_source} — re-pricing cached Magic cards.`);
+        scryfallApi.repriceForSourceChange().catch(e => {
+          console.error(`MTG re-price after price source change failed: ${e.message}`);
+        });
+      }
+    } catch (error) {
+      console.error('Failed to save MTG price source:', error);
+      return res.status(500).json({ error: 'Failed to update settings' });
+    }
+  }
 
   if (pokemon_provider !== undefined) {
     const want = ['tcgdex', 'pokemontcgapi'].includes(pokemon_provider) ? pokemon_provider : 'pokemontcg';

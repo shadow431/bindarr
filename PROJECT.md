@@ -436,7 +436,7 @@ because it depends on which marketplace sells that printing:
 
 | Rows | Source | `price_source` | Currency |
 |------|--------|----------------|----------|
-| MTG, any language | Scryfall `prices.usd`, else `prices.eur` | `scryfall` | USD or EUR |
+| MTG, any language | Scryfall `prices.usd`, else `prices.eur` (reversed when `app_settings.mtg_price_source` is `cardmarket`) | `scryfall` | USD or EUR |
 | Pokémon English / Japanese | TCGCSV (TCGplayer categories 3 / 85) | `tcgcsv` | USD |
 | Pokémon other languages | the **English** TCGplayer product | `tcgcsv-en` | USD |
 | Pokémon fallback | TCGdex's Cardmarket block | `tcgdex` | EUR |
@@ -448,6 +448,9 @@ exchange rate is a live number this app has no source for, and a stale hardcoded
 misprices a collection silently — so `price_currency` travels with the row and the UI
 prints the matching symbol (`utils/formatPrice.priceText`). Collection totals sum the
 currencies as-is; `/api/stats/networth` reports `currencies` so a consumer can tell.
+`price_history.currency` records each point's currency, and the chart and timeline
+read only points in the card's current one, so a currency switch starts a new series
+rather than drawing a price move.
 
 `tcgcsv-en` exists because TCGplayer has no German, Korean or Chinese Pokémon
 catalogue: those cards are priced off the English product for the same set and

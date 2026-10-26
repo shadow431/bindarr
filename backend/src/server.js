@@ -243,6 +243,10 @@ async function autoUpdateCatalogs() {
 let dbReady = false;
 db.initDb()
   .then(async () => {
+    // Before dbReady, so no request can normalize a Magic card against the
+    // default price source on an install configured for Cardmarket. One indexed
+    // read, and it never throws (see scryfallApi.loadPriceSource).
+    await scryfallApi.loadPriceSource();
     dbReady = true;
     console.log('Database tables verified/created successfully.');
 

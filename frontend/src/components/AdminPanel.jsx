@@ -35,6 +35,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
   // Instance Settings States
   const [publicBaseUrl, setPublicBaseUrl] = useState('');
   const [pokemonProvider, setPokemonProvider] = useState('pokemontcg');
+  const [mtgPriceSource, setMtgPriceSource] = useState('tcgplayer');
   const [priceRefreshDays, setPriceRefreshDays] = useState(1);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const mountedRef = useRef(true);
@@ -165,6 +166,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         if (!mountedRef.current) return;
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
+        setMtgPriceSource(data.mtg_price_source || 'tcgplayer');
         setPriceRefreshDays(data.price_refresh_days ?? 1);
       }
     } catch (err) {
@@ -182,6 +184,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         body: JSON.stringify({
           public_base_url: publicBaseUrl,
           pokemon_provider: pokemonProvider,
+          mtg_price_source: mtgPriceSource,
           price_refresh_days: Number(priceRefreshDays),
         })
       });
@@ -190,6 +193,7 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
         const data = await response.json();
         setPublicBaseUrl(data.public_base_url || '');
         setPokemonProvider(data.pokemon_provider || 'pokemontcg');
+        setMtgPriceSource(data.mtg_price_source || 'tcgplayer');
         setPriceRefreshDays(data.price_refresh_days ?? 1);
         showToast(t('admin.settingsUpdated'));
       } else {
@@ -476,6 +480,28 @@ function AdminPanel({ user, onUpdateUser, showToast }) {
               </select>
               <p style={{ margin: '0.4rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
                 {t(pokemonProvider === 'pokemontcgapi' ? 'admin.pokemontcgapiHint' : 'admin.pokemonProviderHint')}
+              </p>
+            </div>
+            {/* Which marketplace Magic prices are read from first (#93). Scryfall
+                quotes TCGplayer in USD and Cardmarket in EUR; reading USD first left
+                European collections a mix of the two, summed as one number on the
+                dashboard. Instance-wide because card_cache is shared. There is no
+                conversion either way — a printing with no quote in the chosen
+                currency keeps the other one, and the row says which. */}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label htmlFor="admin-mtg-price-source">{t('admin.mtgPriceSource')}</label>
+              <select
+                id="admin-mtg-price-source"
+                className="select-control"
+                value={mtgPriceSource}
+                onChange={(e) => setMtgPriceSource(e.target.value)}
+                disabled={settingsLoading}
+              >
+                <option value="tcgplayer">{t('admin.mtgPriceTcgplayer')}</option>
+                <option value="cardmarket">{t('admin.mtgPriceCardmarket')}</option>
+              </select>
+              <p style={{ margin: '0.4rem 0 0', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                {t('admin.mtgPriceSourceHint')}
               </p>
             </div>
             {/* How often prices are refreshed automatically.
