@@ -37,8 +37,19 @@ router.get('/oidc/login', authLimiter, async (req, res) => {
     return res.status(404).json({ error: 'OIDC authentication is not enabled.' });
   }
 
+  // The Android/iOS app opens this in the system browser and says so with
+  // client=native plus the challenge for its secret verifier (see
+  // issueNativeCode). Only that literal value counts; anything else is a web login.
+  let nativeChallenge;
+  if (req.query.client === 'native') {
+    if (!oidc.isValidNativeChallenge(req.query.challenge)) {
+      return res.status(400).json({ error: 'A native app login requires a valid challenge.' });
+    }
+    nativeChallenge = req.query.challenge;
+  }
+
   try {
-    const authUrl = await oidc.buildAuthorizationUrl(req);
+    const authUrl = await oidc.buildAuthorizationUrl(req, { nativeChallenge });
     res.redirect(302, authUrl);
   } catch (error) {
     const { message, log } = oidc.describeFetchError(error);
@@ -55,9 +66,20 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
 
   const { code, state, error, error_description } = req.query;
 
+  // Where the result goes depends on who started the login, and only the signed
+  // state can say that. It is read here, before anything can fail, so an IdP
+  // error or a missing code still lands back in the app that is waiting for it.
+  // No state, or one that does not verify: the web page, as it always was.
+  const startedState = typeof state === 'string' ? oidc.verifyStateToken(state) : null;
+  const native = !!(startedState && startedState.nat);
+
   const frontendRedirect = (params) => {
-    const baseUrl = process.env.PUBLIC_BASE_URL ? process.env.PUBLIC_BASE_URL.replace(/\/+$/, '') : '';
     const qs = new URLSearchParams(params).toString();
+    if (native) {
+      // Declared by the app's intent-filter (Android) / CFBundleURLTypes (iOS).
+      return res.redirect(302, `bindarr://oidc?${qs}`);
+    }
+    const baseUrl = process.env.PUBLIC_BASE_URL ? process.env.PUBLIC_BASE_URL.replace(/\/+$/, '') : '';
     res.redirect(302, `${baseUrl}/?${qs}`);
   };
 
@@ -71,7 +93,7 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
   }
 
   try {
-    const { extracted } = await oidc.exchangeCode({ code, stateToken: state, req });
+    const { extracted, state: stateData } = await oidc.exchangeCode({ code, stateToken: state, req });
     const { sub, username } = extracted;
 
     // 1. Match by existing oidc_sub
@@ -155,6 +177,13 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
       }
     }
 
+    if (stateData && stateData.nat) {
+      // Never the session token through a custom scheme any app can claim: a
+      // one-time code the app redeems at /oidc/exchange with its verifier.
+      const appCode = oidc.issueNativeCode(user.id, stateData.nc);
+      return frontendRedirect({ code: appCode });
+    }
+
     const token = await generateSession(user.id);
     return frontendRedirect({ oidc_token: token });
   } catch (err) {
@@ -163,6 +192,51 @@ router.get('/oidc/callback', authLimiter, async (req, res) => {
     return frontendRedirect({ oidc_error: message });
   }
 });
+
+// The native app's half of the hand-off: trade the one-time code from
+// bindarr://oidc?code=... (plus the verifier only the app holds) for a session.
+// Public by necessity -- the caller is not signed in yet -- and rate limited like
+// every other credential exchange. Same response shape as POST /login, so the app
+// completes sign-in through the same path either way.
+router.post('/oidc/exchange', authLimiter, async (req, res) => {
+  if (!oidc.isOidcEnabled()) {
+    return res.status(404).json({ error: 'OIDC authentication is not enabled.' });
+  }
+
+  const { code, verifier } = req.body || {};
+  const userId = oidc.consumeNativeCode(code, verifier);
+  if (!userId) {
+    return res.status(400).json({ error: 'This sign-in link is invalid or has expired. Please try again.' });
+  }
+
+  try {
+    const user = await db.get(`SELECT * FROM users WHERE id = ?`, [userId]);
+    if (!user) {
+      return res.status(400).json({ error: 'This sign-in link is invalid or has expired. Please try again.' });
+    }
+    const token = await generateSession(user.id);
+    res.json({ message: 'Login successful', token, user: sessionUser(user) });
+  } catch (error) {
+    console.error('OIDC native exchange failed:', error);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// The user object a fresh sign-in hands the client -- shared by password login
+// and the native SSO exchange so the two can never drift apart.
+function sessionUser(user) {
+  return {
+    username: user.username,
+    role: user.role,
+    share_token: user.share_token,
+    share_enabled: user.share_enabled,
+    share_locations: user.share_locations,
+    tcg_api_key: user.tcg_api_key || '',
+    psa_api_token: user.psa_api_token || '',
+    graded_price_api_key: user.graded_price_api_key || '',
+    api_key: user.api_key || ''
+  };
+}
 
 // First run: create the owner account. Open without auth by necessity, and safe
 // only because it refuses the moment any account exists — there is nobody to ask
@@ -294,17 +368,7 @@ router.post('/login', authLimiter, async (req, res) => {
     res.json({
       message: 'Login successful',
       token,
-      user: {
-        username: user.username,
-        role: user.role,
-        share_token: user.share_token,
-        share_enabled: user.share_enabled,
-        share_locations: user.share_locations,
-        tcg_api_key: user.tcg_api_key || '',
-        psa_api_token: user.psa_api_token || '',
-        graded_price_api_key: user.graded_price_api_key || '',
-        api_key: user.api_key || ''
-      }
+      user: sessionUser(user)
     });
   } catch (error) {
     console.error(error);

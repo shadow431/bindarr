@@ -2,8 +2,11 @@ import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { LayoutDashboard, Database, MapPin, Sparkles, Settings as SettingsIcon, LogOut, ShieldAlert, Plus, Swords, StickyNote } from 'lucide-react';
 import Login from './components/Login';
 import Logo from './components/Logo';
+import { App as CapacitorApp } from '@capacitor/app';
 import { pushBackGuard } from './utils/useBackGuard';
 import { useT } from './utils/i18n';
+import { isNative } from './apiBase';
+import { parseOidcReturn, takeVerifier } from './utils/nativeOidc';
 
 // View components are code-split so heavy deps (recharts in the chart views)
 // load on demand instead of in the initial bundle.
@@ -62,7 +65,7 @@ const originalFetch = window.fetch;
 window.fetch = function (input, options = {}) {
   // `input` may be a string, a URL, or a Request object — normalize before using string methods.
   const url = typeof input === 'string' ? input : (input && input.url) || '';
-  const isPublicOrAuthRoute = url.includes('/api/shared/') || url.includes('/api/auth/login') || url.includes('/api/auth/register') || url.includes('/api/auth/bootstrap');
+  const isPublicOrAuthRoute = url.includes('/api/shared/') || url.includes('/api/auth/login') || url.includes('/api/auth/register') || url.includes('/api/auth/bootstrap') || url.includes('/api/auth/oidc/exchange');
 
   const token = localStorage.getItem('bindarr_token');
   const finalOptions = { ...options };
@@ -80,6 +83,13 @@ window.fetch = function (input, options = {}) {
     return response;
   });
 };
+
+// bindarr://oidc links already acted on. Module-level, not state: getLaunchUrl
+// keeps returning the link that cold-started the app for its whole lifetime, and
+// the effect that reads it re-runs. Without this, signing out and starting a new
+// SSO login would replay that old, spent code -- and burn the NEW login's verifier
+// on it.
+const handledOidcReturns = new Set();
 
 function App() {
   const { t } = useT();
@@ -169,6 +179,69 @@ function App() {
       }
     } catch { /* ignore URL parse error */ }
   }, [t, token]);
+
+  // Native SSO return (issue #94). The login ran in the system browser; the
+  // server sends it back as bindarr://oidc?code=... (or ?oidc_error=...), either
+  // to the running app (appUrlOpen) or as the link that cold-started it
+  // (getLaunchUrl). The code is useless without the verifier Login.jsx stored, and
+  // with no verifier pending this app never started a login -- so the link is
+  // ignored rather than signing the user into whatever account it names.
+  useEffect(() => {
+    if (!isNative) return;
+    let cancelled = false;
+    let listener = null;
+
+    const handleUrl = (url) => {
+      const ret = parseOidcReturn(url);
+      // The launch URL and appUrlOpen can both report the same link.
+      if (!ret || handledOidcReturns.has(url)) return;
+      handledOidcReturns.add(url);
+      const verifier = takeVerifier();
+      if (!verifier) return;
+
+      if (ret.error) {
+        showToast(ret.error);
+        return;
+      }
+      fetch('/api/auth/oidc/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: ret.code, verifier })
+      })
+        .then(res => res.json().then(data => (res.ok ? data : Promise.reject(new Error(data.error || 'exchange failed')))))
+        .then(data => {
+          // Deliberately not gated on `cancelled`: the code and verifier are both
+          // spent by now, and on a cold start the locale finishing its load (a new
+          // `t`) re-runs this effect mid-request -- dropping the answer then would
+          // sign nobody in and leave nothing to retry with.
+          if (!data.token || !data.user) return;
+          // Same completion as handleLoginSuccess, inlined so this listener does
+          // not have to be re-registered on every render.
+          setToken(data.token);
+          setUser(data.user);
+          localStorage.setItem('bindarr_token', data.token);
+          localStorage.setItem('bindarr_user', JSON.stringify(data.user));
+          showToast(t('toast.welcomeBack', { name: data.user.username }));
+          setActiveTab('dashboard');
+        })
+        .catch(err => {
+          console.error('OIDC native exchange failed:', err);
+          showToast(t('login.errOidcFailed'));
+        });
+    };
+
+    CapacitorApp.addListener('appUrlOpen', (event) => handleUrl(event.url))
+      .then(handle => { if (cancelled) handle.remove(); else listener = handle; })
+      .catch(err => console.error('appUrlOpen listener failed:', err));
+    CapacitorApp.getLaunchUrl()
+      .then(launch => { if (!cancelled && launch && launch.url) handleUrl(launch.url); })
+      .catch(() => { /* no launch URL */ });
+
+    return () => {
+      cancelled = true;
+      if (listener) listener.remove();
+    };
+  }, [t]);
 
   useEffect(() => {
     if (toast) {
