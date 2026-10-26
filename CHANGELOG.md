@@ -6,6 +6,20 @@ release also carries fuller notes on its
 
 ## [Unreleased]
 
+## [1.8.8] - 2026-10-26
+
+### Added
+- **Cardmarket (EUR) prices for Magic.** Admin → Instance Settings → "Magic price source" chooses TCGplayer (USD, the default) or Cardmarket (EUR). With EUR, Scryfall's euro price is used first and the dollar price only when a printing has no euro quote; nothing is converted and a row never mixes currencies. Switching re-prices owned and decked cards right away, and price history now records each point's currency so a switch does not draw a fake price move. Thanks [@Knartzpirat](https://github.com/Knartzpirat) ([#93](https://github.com/thenotoriousJeremy/bindarr/issues/93), [#96](https://github.com/thenotoriousJeremy/bindarr/pull/96)).
+- **Binder pages match physical pages.** A 12-pocket page now lays out 4 × 3 instead of 3 × 4, and other standard page sizes use their real layouts. Binders also get a "Columns per page" setting (Auto or 1–12) for pages that don't follow the standard layouts. Thanks [@CPBPILOT](https://github.com/CPBPILOT) ([#90](https://github.com/thenotoriousJeremy/bindarr/issues/90), [#99](https://github.com/thenotoriousJeremy/bindarr/pull/99)).
+- **Camera lens picker in the scanner.** Phones with several rear lenses get a lens switch button and a "Camera lens" setting; the choice is remembered. By default the scanner avoids macro, ultra-wide and telephoto lenses. Thanks [@Gamerayers](https://github.com/Gamerayers) ([#92](https://github.com/thenotoriousJeremy/bindarr/issues/92), [#100](https://github.com/thenotoriousJeremy/bindarr/pull/100)).
+- **"Color" sort in the collection and shared-collection views**, next to "Type" ([#88](https://github.com/thenotoriousJeremy/bindarr/issues/88), [#98](https://github.com/thenotoriousJeremy/bindarr/pull/98)).
+
+### Fixed
+- **Single sign-on works in the Android and iOS apps.** The SSO button opened the system browser, which then landed on the web version of Bindarr and the app never signed in. The login now returns to the app through `bindarr://oidc` with a short-lived, single-use code that only the app that started the login can redeem. No change is needed at the identity provider. Thanks [@mconway](https://github.com/mconway) ([#94](https://github.com/thenotoriousJeremy/bindarr/issues/94), [#95](https://github.com/thenotoriousJeremy/bindarr/pull/95)).
+- **Sorting Magic cards by type sorts by card type** (Creature, Planeswalker, Instant, Sorcery, Enchantment, Artifact, Battle, Land) instead of by color. Pages already assigned a color keep taking those cards. Color dividers in storage now match where cards are actually filed (a two-color card is Multicolor). Thanks [@bonogo123](https://github.com/bonogo123) ([#88](https://github.com/thenotoriousJeremy/bindarr/issues/88), [#98](https://github.com/thenotoriousJeremy/bindarr/pull/98)).
+- **All tabs stay on screen with large system fonts.** The last tab was cut off on the phone's bottom bar, and on the top bar in landscape. The bottom bar now shows icons with the active tab's label on narrow screens, and the top bar steps down only as far as it needs to (hide the greeting, then icons only). Thanks [@Gamerayers](https://github.com/Gamerayers) ([#92](https://github.com/thenotoriousJeremy/bindarr/issues/92), [#100](https://github.com/thenotoriousJeremy/bindarr/pull/100)).
+- **The deck builder no longer creeps sideways** as copies of a card are added; long "unavailable copies" warnings truncate instead of widening the page. The same overflow fix applies to the dashboard charts. Thanks [@CojakSilverBack](https://github.com/CojakSilverBack) ([#89](https://github.com/thenotoriousJeremy/bindarr/issues/89), [#97](https://github.com/thenotoriousJeremy/bindarr/pull/97)).
+
 ## [1.8.7] - 2026-10-11
 
 ### Added
