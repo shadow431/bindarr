@@ -789,6 +789,14 @@ async function initDb() {
     await run(`ALTER TABLE locations ADD COLUMN fixed_slots TEXT`);
   }
 
+  // Page columns: how many pockets wide a binder page is drawn. NULL (the
+  // default) lets the client pick from the page's capacity; a number overrides
+  // that for pages the standard layouts don't cover, e.g. a 12-pocket page that
+  // really is 3 wide.
+  if (!locationsStackCols.some(c => c.name === 'page_columns')) {
+    await run(`ALTER TABLE locations ADD COLUMN page_columns INTEGER`);
+  }
+
   await splitStackedRows();
 
   // --- PERFORMANCE INDEXES ---
