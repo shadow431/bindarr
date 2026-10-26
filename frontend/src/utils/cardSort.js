@@ -1,4 +1,4 @@
-import { getRarityRank } from './cardRarity';
+import { getRarityRank } from './cardRarity.js';
 import cardOrder from '../../../shared/cardOrder.json';
 import sortSchemes from '../../../shared/sortSchemes.json';
 
@@ -9,11 +9,48 @@ import sortSchemes from '../../../shared/sortSchemes.json';
 // the backend filing engine (compartmentSort.js) exactly.
 export const POKEMON_TYPE_ORDER = cardOrder.pokemonType;
 
+export const MTG_CARD_TYPE_ORDER = cardOrder.mtgCardType;
+
 // Mirrors typeCategory in the backend: multi-color MTG cards bucket together.
 export function typeCategory(types) {
   const t = Array.isArray(types) ? types : [];
   if (t.length > 1) return 'Multicolor';
   return t[0] || 'Colorless';
+}
+
+function asList(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.startsWith('[')) {
+    try { const p = JSON.parse(value); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
+// `types` holds colours for an MTG card (the deck colour charts read it that
+// way), so the card's type line — split into words in `subtypes` — is what a
+// "type" sort has to read instead. `supertype` is the fallback for rows that
+// were selected without the game column.
+export function isMtgCard(card) {
+  return !!card && (card.game === 'mtg' || card.supertype === 'MTG');
+}
+
+// One card-type category per MTG card; see shared/cardOrder.json for why the
+// pick order is what it is. Mirrors mtgTypeCategory in the backend.
+export function mtgTypeCategory(subtypes) {
+  const words = new Set(asList(subtypes).map(w => String(w).toLowerCase()));
+  return cardOrder.mtgCardTypePick.find(type => words.has(type.toLowerCase())) || 'Other';
+}
+
+// The category a card sorts and groups under for the 'type' field: card type
+// for Magic, the type/ink list as before for Pokémon and Lorcana.
+export function cardTypeCategory(card) {
+  if (isMtgCard(card)) return mtgTypeCategory(card.subtypes);
+  return typeCategory(asList(card && card.types));
+}
+
+function typeRank(card) {
+  const order = isMtgCard(card) ? MTG_CARD_TYPE_ORDER : POKEMON_TYPE_ORDER;
+  return order[cardTypeCategory(card)] || 50;
 }
 
 export function getPrintingRank(printing, foilSorting) {
@@ -93,12 +130,9 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           cmp = printA - printB;
           break;
         }
-        case 'type': {
-          const orderA = POKEMON_TYPE_ORDER[typeCategory(a.types)] || 50;
-          const orderB = POKEMON_TYPE_ORDER[typeCategory(b.types)] || 50;
-          cmp = orderA - orderB;
+        case 'type':
+          cmp = typeRank(a) - typeRank(b);
           break;
-        }
         case 'language': {
           const la = LANGUAGE_ORDER[a.language] || 99;
           const lb = LANGUAGE_ORDER[b.language] || 99;

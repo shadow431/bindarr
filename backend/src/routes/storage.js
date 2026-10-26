@@ -668,7 +668,10 @@ router.post('/locations/:id/recommend-batch', async (req, res) => {
         language: entry.language,
         name: entry.name,
         supertype: entry.supertype,
+        game: entry.game,
         types: JSON.stringify(entry.types),
+        // An MTG card's type sort reads its type line, which lives here.
+        subtypes: entry.subtypes,
         rarity: entry.rarity,
         set_name: entry.set_name,
         number: entry.number,
@@ -737,7 +740,7 @@ router.post('/locations/:id/resort', async (req, res) => {
 
     const cards = await db.all(`
       SELECT c.id as entry_id, c.card_id, c.printing, c.language, c.quantity, c.favorite, c.is_trade, c.list_type,
-             cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.rarity, cc.supertype, cc.image_url, cc.game,
+             cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.subtypes, cc.rarity, cc.supertype, cc.image_url, cc.game,
              cc.price_trend, cc.price_normal, cc.price_holofoil, cc.price_reverse_holofoil, cc.cmc, cc.color_identity
       FROM collection c
       JOIN card_cache cc ON c.card_id = cc.id
