@@ -83,6 +83,7 @@ function SharedContainer({ shareToken, containerId }) {
     compartment,
     cards: cardsByCompartment.get(compartment.id) || [],
     allowStacking: !!location.allow_stacking,
+    pageColumns: location.page_columns,
     sortOrder: location.sort_order,
     locationType: location.type,
   });

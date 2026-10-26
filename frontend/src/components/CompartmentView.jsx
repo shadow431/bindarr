@@ -8,14 +8,11 @@ import { cardTypeCategory, colorCategory } from '../utils/cardSort';
 import { isBinderType } from '../utils/cardOptions';
 import { displayName } from '../utils/languages';
 import { useLongPress } from '../utils/useLongPress';
+import { pageColumns as resolvePageColumns } from '../utils/binderLayout';
 import CardImage from './CardImage';
 import { useT } from '../utils/i18n';
 
 const infoChipStyle = { fontSize: '0.6rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' };
-
-function pocketColumns(capacity) {
-  return Math.max(1, Math.round(Math.sqrt(capacity || 1)));
-}
 
 // Collapse copies of the same card into one pocket, keyed the way the server
 // counts occupancy on a stacking container (card, printing and language; not
@@ -266,6 +263,9 @@ export default function CompartmentView({
   // Container has allow_stacking: every copy of a card shares one pocket instead
   // of taking one each. See stackPocketCards.
   allowStacking = false,
+  // Binder's locations.page_columns: pockets per row on a binder page. null is
+  // automatic, worked out from the page's capacity (see utils/binderLayout).
+  pageColumns = null,
   sortOrder = 'custom',
   setsList = [],
   highlightPositions = [], // Array of positions to highlight (1-indexed)
@@ -488,7 +488,7 @@ export default function CompartmentView({
   if (!compartment) return null;
 
   if (isBinder) {
-    const cols = pocketColumns(compartment.capacity);
+    const cols = resolvePageColumns(compartment.capacity, pageColumns);
     const pocketCards = allowStacking ? stackPocketCards(cards) : cards;
     let maxSlotFromCards = compartment.capacity || 1;
     pocketCards.forEach(c => {

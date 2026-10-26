@@ -26,7 +26,7 @@ const CheckoutWizardModal = ({ locationsData, mode = 'checkout', onClose, onCanc
   const [done, setDone] = useState(new Set());
   const [expanded, setExpanded] = useState({}); // container.key -> user forced open after auto-collapse
   const [setsList, setSetsList] = useState([]);
-  const [grids, setGrids] = useState({}); // page.key -> { compartment, cards, locationType, sortOrder }
+  const [grids, setGrids] = useState({}); // page.key -> { compartment, cards, locationType, sortOrder, pageColumns }
 
   useBackGuard(true, cancel);
 
@@ -119,7 +119,7 @@ const CheckoutWizardModal = ({ locationsData, mode = 'checkout', onClose, onCanc
           const sortOrder = loc.sort_order || 'custom';
           if (sortOrder === 'custom') cards.sort((a, b) => (a.position || 0) - (b.position || 0));
           else sortCardsByOrder(cards, sortOrder, loc.foil_sorting, setsList);
-          next[pg.key] = { compartment: comp, cards, locationType: loc.type || 'Binder', sortOrder };
+          next[pg.key] = { compartment: comp, cards, locationType: loc.type || 'Binder', sortOrder, pageColumns: loc.page_columns };
         } catch (err) {
           console.error('Failed to load compartment layout', err);
         }
@@ -216,6 +216,7 @@ const CheckoutWizardModal = ({ locationsData, mode = 'checkout', onClose, onCanc
           compartment={grid.compartment}
           cards={grid.cards}
           locationType={grid.locationType}
+          pageColumns={grid.pageColumns}
           sortOrder={grid.sortOrder}
           setsList={setsList}
           highlightEntryIds={undoneIds}

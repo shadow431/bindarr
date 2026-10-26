@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, BookOpen, Box, Package, Award, LayoutGrid, Layers, Archive, HelpCircle, ArrowLeft, ArrowRight } from 'lucide-react';
 import { SortBuilder, FilterBuilder } from './SortFilterBuilder';
+import PageColumnsSelect from './PageColumnsSelect';
 import { isBinderType, containerTypeKey } from '../utils/cardOptions';
 import { useBackGuard } from '../utils/useBackGuard';
 import { gameOptions, showGamePicker } from '../utils/games';
@@ -39,6 +40,8 @@ export default function CreateContainerModal({ onClose, onCreate, setsList = [],
   const [game, setGame] = useState('any');
   const [count, setCount] = useState(TYPE_META[0].plan.count);
   const [capacity, setCapacity] = useState(TYPE_META[0].plan.capacity);
+  // Binder page width: '' = automatic from the capacity.
+  const [columns, setColumns] = useState('');
   const [sortDraft, setSortDraft] = useState([]);
   const [filterDraft, setFilterDraft] = useState([]);
   const [submitting, setSubmitting] = useState(false);
@@ -48,7 +51,7 @@ export default function CreateContainerModal({ onClose, onCreate, setsList = [],
   const pickType = (next) => {
     setType(next);
     const meta = TYPE_META.find(m => m.type === next);
-    if (meta) { setCount(meta.plan.count); setCapacity(meta.plan.capacity); }
+    if (meta) { setCount(meta.plan.count); setCapacity(meta.plan.capacity); setColumns(''); }
   };
 
   const kind = compartmentKind(type);
@@ -67,6 +70,7 @@ export default function CreateContainerModal({ onClose, onCreate, setsList = [],
       sort_order: sortDraft.length > 0 ? JSON.stringify(sortDraft) : 'custom',
       rule_type: filterDraft.length > 0 ? 'compound' : 'any',
       rule_config: filterDraft.length > 0 ? JSON.stringify({ rules: filterDraft }) : null,
+      page_columns: isBinderType(type) && columns !== '' ? parseInt(columns, 10) : null,
     };
     await onCreate(payload);
     setSubmitting(false);
@@ -141,6 +145,12 @@ export default function CreateContainerModal({ onClose, onCreate, setsList = [],
                 <label style={{ fontSize: '0.72rem' }}>{t(`container.${kind}.perLabel`)}</label>
                 <input type="number" min="1" className="input-control" value={capacity} onChange={(e) => setCapacity(e.target.value)} style={{ width: '110px' }} />
               </div>
+              {isBinderType(type) && (
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label htmlFor="newContainerColumns" style={{ fontSize: '0.72rem' }}>{t('loc.pageColumns')}</label>
+                  <PageColumnsSelect id="newContainerColumns" value={columns} onChange={setColumns} capacity={capacity} style={{ width: '140px' }} />
+                </div>
+              )}
             </div>
             <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: 0 }}>
               {t(`container.${kind}.summary`, {
