@@ -1073,6 +1073,11 @@ button, input, select, textarea {
 
 .nav-tab {
   flex: 1;
+  /* A flex item will not shrink below its content by default, so seven labels
+     at Android's large system font (the WebView honours it) pushed the last tabs
+     off the bottom bar. min-width: 0 lets the tabs share the bar; the label
+     ellipsizes instead (.nav-tab-label). */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1092,6 +1097,14 @@ button, input, select, textarea {
 .nav-tab svg {
   width: 20px;
   height: 20px;
+  flex-shrink: 0;
+}
+
+.nav-tab-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* hover:hover guard: on touch devices a tap leaves the button in :hover until
@@ -1114,13 +1127,39 @@ button, input, select, textarea {
 }
 
 @media (min-width: 769px) {
+  .logo-section {
+    flex-shrink: 0;
+  }
+
+  /* When the row is tight the greeting wraps first (down to its longest
+     word), before the tab bar gives up any width. */
+  .header-actions {
+    flex-shrink: 100;
+  }
+
   .nav-tabs {
     border-radius: var(--radius-sm);
     gap: 0.5rem;
     padding: 0.5rem;
+    /* In the header the bar shares a row with the logo and the greeting, and
+       used to run off the right edge (a phone turned sideways lands here).
+       Shrink, then scroll as the last resort; the scrollbar stays hidden. */
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
-  
+
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
   .nav-tab {
+    /* Content-sized in the top bar, shrinking only as far as a label wrapped
+       onto two lines ("Deck / Builder") — never squashed or cut. Past that
+       App.jsx steps the header down, and the bar scrolls as a last resort. */
+    flex: 0 1 auto;
+    min-width: auto;
     flex-direction: row;
     padding: 0.75rem 1.25rem;
     font-size: 0.95rem;
@@ -1130,6 +1169,39 @@ button, input, select, textarea {
   .nav-tab svg {
     width: 18px;
     height: 18px;
+  }
+
+  /* The ellipsis is for the bottom bar; up here a label may wrap instead. */
+  .nav-tab-label {
+    overflow: visible;
+    white-space: normal;
+    line-height: 1.2;
+  }
+}
+
+/* Top bar degrades in measured steps, not at fixed widths: how much room the
+   tabs need depends on the font scale, the language and whether the admin tab
+   is there, none of which a media query can see. App.jsx measures the bar and
+   adds, only when the previous step still doesn't fit:
+     1. .nav-tight on the header: the greeting goes (logout stays) — it is the
+        least useful thing in the row;
+     2. .nav-compact on the bar: icons only except the active tab (the rule is
+        shared with the bottom bar, below), with tighter tabs;
+     3. .nav-tighter on the header: the "Bindarr" wordmark goes, the logo mark
+        stays (a phone turned sideways with a large font needs this);
+     4. nothing more: the bar's hidden-scrollbar overflow-x is the last resort. */
+@media (min-width: 769px) {
+  .app-header.nav-tight .header-greeting,
+  .app-header.nav-tighter .logo-text {
+    display: none !important;
+  }
+
+  .nav-tabs.nav-compact {
+    gap: 0.25rem;
+  }
+
+  .nav-tabs.nav-compact .nav-tab {
+    padding: 0.6rem 0.55rem;
   }
 }
 
@@ -1155,6 +1227,50 @@ button, input, select, textarea {
        Android env(safe-area-inset-bottom) is 0, so also honor --sab (set from
        native window insets in MainActivity). */
     padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--sab, 0px));
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+    gap: 0.15rem;
+  }
+
+  /* Seven tabs share a phone's width: trim the side padding the labels need. */
+  .nav-tab {
+    padding: 0.55rem 0.15rem;
+    font-size: 0.7rem;
+    gap: 0.2rem;
+    line-height: 1.2;
+  }
+}
+
+/* Narrow phones: seven labels can't fit even at the default font, and with a
+   large system font they were cut to a few letters each. Show icons only, but
+   keep the active tab's name (it gets the room the others gave up) so the
+   current page is still readable. The name stays the button's aria-label. */
+@media (max-width: 480px) {
+  .nav-tab:not(.active) .nav-tab-label {
+    display: none;
+  }
+
+  .nav-tab.active {
+    flex-grow: 2.2;
+  }
+}
+
+/* Set by App.jsx only while it measures the bar. .nav-tab transitions its
+   padding, so without this a measurement taken right after toggling a class
+   would read the OLD sizes (the start of the transition) and pick wrong. */
+.nav-tabs.nav-measuring .nav-tab {
+  transition: none !important;
+}
+
+/* The same icons-only rule at any width, applied by App.jsx when it measures
+   that the labels don't fit (large system font, long translations). */
+.nav-tabs.nav-compact .nav-tab:not(.active) .nav-tab-label {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .nav-tabs.nav-compact .nav-tab.active {
+    flex-grow: 2.2;
   }
 }
 
