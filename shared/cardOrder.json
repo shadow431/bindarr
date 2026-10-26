@@ -18,6 +18,12 @@
     "Portuguese": 7, "Korean": 8, "Russian": 9,
     "Chinese (Traditional)": 10, "Chinese (Simplified)": 11
   },
+  "_mtgCardType_comment": "MTG 'type' sort/grouping is by card type, not colour (issue #88; colour has its own color/color_identity sort). mtgCardTypePick is the priority used to pick ONE category from a type line that names several: Creature beats everything (an Artifact or Enchantment Creature is played and filed as a creature), and Land beats Artifact/Enchantment because deck builders file Artifact and Enchantment Lands with the lands. A type line with none of these (Conspiracy, Dungeon, Plane, Scheme, Vanguard, Phenomenon, Emblem) is 'Other'; Kindred/Tribal only ever qualifies another type, so it picks that type. mtgCardType is the display/sort order, the same order the deck builder groups by, ranked after the Pokémon energy types so a mixed-game container keeps the games apart.",
+  "mtgCardTypePick": ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Land", "Artifact", "Enchantment"],
+  "mtgCardType": {
+    "Creature": 30, "Planeswalker": 31, "Instant": 32, "Sorcery": 33, "Enchantment": 34,
+    "Artifact": 35, "Battle": 36, "Land": 37, "Other": 38
+  },
   "wubrg": {
     "White": 1, "W": 1, "Blue": 2, "U": 2, "Black": 3, "B": 3,
     "Red": 4, "R": 4, "Green": 5, "G": 5, "Multicolor": 6, "Colorless": 7

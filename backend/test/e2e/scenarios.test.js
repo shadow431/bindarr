@@ -72,20 +72,20 @@ async function runTests() {
       'Authorization': `Bearer ${token}`
     };
 
-    // F6-TC2: Mixed-game collection sorting (Pokémon type-name vs MTG WUBRG)
+    // F6-TC2: Mixed-game collection sorting (Pokémon energy type, then MTG card type)
     try {
       const { sortCards } = require('../../src/utils/compartmentSort');
       const cards = [
-        { name: 'Swamp', types: ['Black'], game: 'mtg' },
+        { name: 'Swamp', types: [], subtypes: ['Basic', 'Land', 'Swamp'], game: 'mtg' },
         { name: 'Charmander', types: ['Fire'], game: 'pokemon' },
-        { name: 'Plains', types: ['White'], game: 'mtg' },
+        { name: 'Serra Angel', types: ['White'], subtypes: ['Creature', 'Angel'], game: 'mtg' },
         { name: 'Bulbasaur', types: ['Grass'], game: 'pokemon' }
       ];
       const sorted = sortCards(cards, 'type-name', 'normals_first');
-      // Bulbasaur (Grass) -> Charmander (Fire) -> Plains (White) -> Swamp (Black)
+      // Bulbasaur (Grass) -> Charmander (Fire) -> Serra Angel (Creature) -> Swamp (Land)
       assert.strictEqual(sorted[0].name, 'Bulbasaur');
       assert.strictEqual(sorted[1].name, 'Charmander');
-      assert.strictEqual(sorted[2].name, 'Plains');
+      assert.strictEqual(sorted[2].name, 'Serra Angel');
       assert.strictEqual(sorted[3].name, 'Swamp');
       console.log('PASS: F6-TC2');
     } catch (err) {

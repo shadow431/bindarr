@@ -107,6 +107,8 @@ router.get('/:share_token', async (req, res) => {
         cc.supertype,
         cc.subtypes,
         cc.types,
+        -- For the colour sort, which buckets by colour identity.
+        cc.color_identity,
         cc.rarity,
         cc.set_id,
         cc.set_name,
