@@ -243,12 +243,6 @@ const dbMod = require('../src/db');
 (async () => {
   await dbMod.initDb();
   const cols = (await dbMod.all(`PRAGMA table_info(app_settings)`)).map(c => c.name);
-  assert.ok(cols.includes('installation_id'), 'app_settings needs a persistent installation ID');
-  const { installation_id: installationId } =
-    await dbMod.get(`SELECT installation_id FROM app_settings WHERE id = 1`);
-  assert.match(installationId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-    'installation ID must be a UUID');
-
   const originalAdapter = tcgcsv.client.defaults.adapter;
   let remoteVersion = '2026-10-25T20:05:50+0000';
   const remoteRequests = [];
@@ -264,8 +258,8 @@ const dbMod = require('../src/db');
   };
   await tcgcsv.syncIfUpdated();
   assert.strictEqual(remoteRequests.length, 13, 'the initial targeted sync should fetch the timestamp, groups, products, and prices');
-  assert.ok(remoteRequests.every(request => request.userAgent.includes(`install-id=${installationId}`)),
-    'all TCGCSV requests must use the installation User-Agent');
+  assert.ok(remoteRequests.every(request => request.userAgent === tcgcsv.USER_AGENT),
+    'all TCGCSV requests must use the standard Bindarr User-Agent');
   for (let i = 1; i < remoteRequests.length; i++) {
     const gap = remoteRequests[i].startedAt - remoteRequests[i - 1].startedAt;
     assert.ok(gap >= 100, `TCGCSV requests must be spaced by at least 100ms (observed ${gap}ms)`);
@@ -339,8 +333,8 @@ const dbMod = require('../src/db');
     console.warn = originalWarn;
   }
   assert.ok(failureLogs.some(message => /HTTP 403 Forbidden.*https:\/\/tcgcsv\.com\/last-updated\.txt/.test(message)));
-  assert.ok(failureLogs.some(message => message.includes(`install-id=${installationId}`)),
-    'TCGCSV failure diagnostics must include the request User-Agent');
+  assert.ok(failureLogs.some(message => message.includes(`user-agent="${tcgcsv.USER_AGENT}"`)),
+    'TCGCSV failure diagnostics must include the standard User-Agent');
   assert.ok(failureLogs.some(message => /cf-ray=fixture-ray.*Request blocked/.test(message)));
 
   const { cooldown_active: cooldownActive } =

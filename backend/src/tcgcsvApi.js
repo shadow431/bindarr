@@ -47,21 +47,10 @@ const client = axios.create({
   headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
 });
 
-let installationId;
 let loggedCooldownUntil;
 let lastRequestAt = 0;
 let requestQueue = Promise.resolve();
 let syncPromise = null;
-async function getInstallationUserAgent() {
-  if (!installationId) {
-    const settings = await db.get(`SELECT installation_id FROM app_settings WHERE id = 1`);
-    if (!settings || !settings.installation_id) {
-      throw new Error('Bindarr installation ID is not initialized');
-    }
-    installationId = settings.installation_id;
-  }
-  return USER_AGENT.replace(/\)$/, `; install-id=${installationId})`);
-}
 
 class TcgcsvCooldownError extends Error {
   constructor(until) {
@@ -158,13 +147,9 @@ function pacedGet(path, config = {}) {
     const delay = TCGCSV_MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
     if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
     await check403Cooldown();
-    const userAgent = await getInstallationUserAgent();
     lastRequestAt = Date.now();
     try {
-      return await client.get(path, {
-        ...config,
-        headers: { ...(config.headers || {}), 'User-Agent': userAgent },
-      });
+      return await client.get(path, config);
     } catch (error) {
       logRequestFailure(path, error);
       if (error && error.response && error.response.status === 403) {

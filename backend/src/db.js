@@ -1,7 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
 
 // The app began life as "PokeKeep", a Pokémon-only tracker, so its database was
 // called pokemon_cards.db. It has handled Magic since v1.4.x, and the file name
@@ -430,13 +429,6 @@ async function initDb() {
   // sweep would otherwise re-run on every restart (constantly, under nodemon).
   // Persisted rather than in-memory precisely because restarts are the problem.
   const appSettingsCols = await all(`PRAGMA table_info(app_settings)`);
-  if (!appSettingsCols.some(c => c.name === 'installation_id')) {
-    await run(`ALTER TABLE app_settings ADD COLUMN installation_id TEXT`);
-  }
-  const settings = await get(`SELECT installation_id FROM app_settings WHERE id = 1`);
-  if (!settings.installation_id) {
-    await run(`UPDATE app_settings SET installation_id = ? WHERE id = 1`, [crypto.randomUUID()]);
-  }
   if (!appSettingsCols.some(c => c.name === 'mtg_prices_swept_at')) {
     await run(`ALTER TABLE app_settings ADD COLUMN mtg_prices_swept_at DATETIME`);
   }
