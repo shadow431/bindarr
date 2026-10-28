@@ -996,6 +996,7 @@
   "sealed.addCardComponent": "Add card",
   "sealed.addProductComponent": "Add sub-product",
   "sealed.cardSearchPlaceholder": "Search cards…",
+  "sealed.cardSetPlaceholder": "Set (e.g. MEP)",
   "sealed.componentCard": "card",
   "sealed.componentProduct": "sub-product",
   "sealed.saveRecipe": "Save recipe",

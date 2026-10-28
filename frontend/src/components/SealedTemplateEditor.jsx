@@ -16,6 +16,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [cardQuery, setCardQuery] = useState('');
+  const [cardSet, setCardSet] = useState('');
   const [cardResults, setCardResults] = useState([]);
   const [cardPage, setCardPage] = useState(1);
   const [cardHasMore, setCardHasMore] = useState(false);
@@ -43,10 +44,12 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
   }, [productId, productName]);
 
   const searchCards = async (page = 1) => {
-    if (!cardQuery.trim()) { setCardResults([]); return; }
+    if (!cardQuery.trim() && !cardSet.trim()) { setCardResults([]); return; }
     setCardSearchBusy(true);
     try {
-      const params = new URLSearchParams({ name: cardQuery.trim(), game: game || 'pokemon', scope: 'database', limit: '60', page: String(page) });
+      const params = new URLSearchParams({ game: game || 'pokemon', scope: 'database', limit: '60', page: String(page) });
+      if (cardQuery.trim()) params.set('name', cardQuery.trim());
+      if (cardSet.trim()) params.set('set', cardSet.trim());
       const res = await fetch(`/api/search?${params}`);
       const data = await res.json().catch(() => []);
       const results = Array.isArray(data) ? data : [];
@@ -60,7 +63,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
 
   const addCard = (card) => {
     setComponents(c => [...c, { component_type: 'card', quantity: 1, card_id: card.id, label: card.name }]);
-    setCardQuery(''); setCardResults([]); setShowCardSearch(false);
+    setCardQuery(''); setCardSet(''); setCardResults([]); setShowCardSearch(false);
   };
 
   const addProduct = (product) => {
@@ -140,8 +143,11 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             <input className="input-control" value={cardQuery} onChange={(e) => setCardQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchCards(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchCards(1); } }}
               placeholder={t('sealed.cardSearchPlaceholder')} />
+            <input className="input-control" value={cardSet} onChange={(e) => setCardSet(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); searchCards(1); } }}
+              placeholder={t('sealed.cardSetPlaceholder')} style={{ maxWidth: '8rem' }} />
             <button type="button" className="btn btn-secondary" disabled={cardSearchBusy} onClick={() => searchCards(1)}>{t('common.search') || 'Search'}</button>
           </div>
           {(cardResults.length > 0 || cardHasMore) && (
