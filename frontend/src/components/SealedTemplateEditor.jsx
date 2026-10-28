@@ -72,7 +72,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
     setShowProductPicker(false);
   };
 
-  const updateQuantity = (idx, qty) => setComponents(c => c.map((x, i) => i === idx ? { ...x, quantity: Math.max(1, parseInt(qty, 10) || 1) } : x));
+  const updateQuantity = (idx, qty) => setComponents(c => c.map((x, i) => i === idx ? { ...x, quantity: qty === '' ? '' : Math.max(1, parseInt(qty, 10) || 1) } : x));
   const removeComponent = (idx) => setComponents(c => c.filter((_, i) => i !== idx));
 
   const save = async () => {
@@ -82,7 +82,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       const res = await fetch('/api/sealed/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: productId || null, product_name: productName, game, components }),
+        body: JSON.stringify({ product_id: productId || null, product_name: productName, game, components: components.map(c => ({ ...c, quantity: Math.max(1, parseInt(c.quantity, 10) || 1) })) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { showToast?.(data.error || t('sealed.errSave')); return; }
@@ -108,7 +108,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
           {components.map((c, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-strong)' }}>
-              <input type="number" min="1" className="input-control" value={c.quantity} onChange={(e) => updateQuantity(i, e.target.value)} style={{ width: '3.5rem', padding: '0.2rem' }} />
+              <input type="number" min="1" className="input-control" value={c.quantity} onChange={(e) => updateQuantity(i, e.target.value)} onBlur={() => c.quantity === '' && updateQuantity(i, '1')} style={{ width: '3.5rem', padding: '0.2rem' }} />
               <span style={{ flex: 1 }}>{c.label} <span style={{ color: 'var(--text-secondary)' }}>({t(c.component_type === 'card' ? 'sealed.componentCard' : 'sealed.componentProduct')})</span>
                 {c.component_type === 'product' && (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', marginLeft: '0.5rem' }}>
@@ -163,7 +163,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       )}
 
       {showProductPicker && (
-        <SealedCatalogPicker game={game} onGameChange={() => {}} onPick={addProduct} />
+        <SealedCatalogPicker game={game} onGameChange={() => {}} onPick={addProduct} confirmManual />
       )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>

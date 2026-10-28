@@ -7,7 +7,7 @@ import { GAMES } from '../utils/games';
 // for the "pick from catalog" step of adding a purchase. Falls back to a free-text
 // name when nothing in the catalog matches — the product map may not be built yet,
 // or the product may simply not be in TCGplayer's catalogue.
-export default function SealedCatalogPicker({ game, onGameChange, onPick }) {
+export default function SealedCatalogPicker({ game, onGameChange, onPick, confirmManual = false }) {
   const { t } = useT();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
@@ -34,9 +34,16 @@ export default function SealedCatalogPicker({ game, onGameChange, onPick }) {
         <label>{t('sealed.productName')}</label>
         <input
           className="input-control" value={manualName}
-          onChange={(e) => { setManualName(e.target.value); onPick({ product_id: null, name: e.target.value }); }}
+          onChange={(e) => { setManualName(e.target.value); if (!confirmManual) onPick({ product_id: null, name: e.target.value }); }}
+          onKeyDown={confirmManual ? (e) => { if (e.key === 'Enter') { e.preventDefault(); if (manualName.trim()) onPick({ product_id: null, name: manualName.trim() }); } } : undefined}
           placeholder={t('sealed.productNamePlaceholder')}
         />
+        {confirmManual && (
+          <button type="button" className="btn btn-primary btn-sm" style={{ marginTop: '0.4rem', marginRight: '0.4rem' }}
+            disabled={!manualName.trim()} onClick={() => onPick({ product_id: null, name: manualName.trim() })}>
+            {t('common.add') || 'Add'}
+          </button>
+        )}
         <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: '0.4rem' }}
           onClick={() => setManual(false)}>
           {t('sealed.backToCatalog')}
