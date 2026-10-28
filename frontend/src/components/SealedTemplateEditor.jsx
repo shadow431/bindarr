@@ -23,6 +23,9 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
   const [cardSearchBusy, setCardSearchBusy] = useState(false);
   const [showCardSearch, setShowCardSearch] = useState(false);
   const [showProductPicker, setShowProductPicker] = useState(false);
+  // Cards-per-pack already entered on this user's other recipes, keyed by product,
+  // so a repeated component (e.g. the same booster pack) starts pre-filled.
+  const [knownCounts, setKnownCounts] = useState({ byId: {}, byName: {} });
 
   useEffect(() => {
     if (!productName) { setLoading(false); return; }
@@ -42,6 +45,23 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [productId, productName]);
+
+  useEffect(() => {
+    fetch('/api/sealed/templates')
+      .then(r => r.json())
+      .then(d => {
+        const byId = {}; const byName = {};
+        for (const tpl of d.templates || []) {
+          for (const c of tpl.components || []) {
+            if (c.component_type !== 'product' || c.expected_cards == null || c.expected_cards === '') continue;
+            if (c.product_id) byId[c.product_id] = c.expected_cards;
+            if (c.product_name) byName[c.product_name.toLowerCase()] = c.expected_cards;
+          }
+        }
+        setKnownCounts({ byId, byName });
+      })
+      .catch(() => {});
+  }, []);
 
   const searchCards = async (page = 1) => {
     if (!cardQuery.trim() && !cardSet.trim()) { setCardResults([]); return; }
@@ -70,7 +90,8 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
     setComponents(c => [...c, {
       component_type: 'product', quantity: 1,
       product_id: product.product_id || null, product_name: product.name, sealed_type: product.sealed_type || null, game,
-      expected_cards: '', label: product.name,
+      expected_cards: knownCounts.byId[product.product_id] ?? knownCounts.byName[String(product.name || '').toLowerCase()] ?? '',
+      label: product.name,
     }]);
     setShowProductPicker(false);
   };
