@@ -2,6 +2,8 @@ const express = require('express');
 const db = require('../db');
 const { withTransaction } = require('../db');
 const tcgcsv = require('../tcgcsvApi');
+const { productCardCount } = require('../utils/sealedContents');
+const { allocateSealedUnitCost } = require('../utils/sealedCostAllocation');
 
 const router = express.Router();
 
@@ -37,11 +39,15 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
     else productComponentsByKey.set(key, { ...component, game, quantity: Math.max(1, component.quantity || 1) });
   }
   const productComponents = [...productComponentsByKey.values()];
-  const productCardCount = productComponents.reduce((sum, component) =>
-    sum + component.quantity * Math.max(1, Number(component.expected_cards) || 1), 0);
+  for (const component of productComponents) {
+    component.cardCount = await productCardCount(
+      purchase.user_id, component.product_id, component.product_name, component.expected_cards);
+  }
+  const productCards = productComponents.reduce((sum, component) =>
+    sum + component.quantity * component.cardCount, 0);
   const cardUnitCount = template.components.reduce((sum, component) =>
     sum + (component.component_type === 'card' && component.card_id ? Math.max(1, component.quantity || 1) : 0), 0);
-  const componentUnitCount = cardUnitCount + productCardCount;
+  const componentUnitCount = cardUnitCount + productCards;
   const componentUnitPrice = purchase.unit_price == null || componentUnitCount === 0
     ? null
     : Number(purchase.unit_price) / componentUnitCount;
@@ -85,7 +91,7 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
         );
       for (const row of existingRows) {
         if (row.unit_price == null && componentUnitPrice != null) {
-          const productUnitPrice = componentUnitPrice * Math.max(1, Number(c.expected_cards) || 1);
+          const productUnitPrice = componentUnitPrice * c.cardCount;
           await db.run(`UPDATE sealed_purchases SET unit_price = ? WHERE id = ?`, [productUnitPrice, row.id]);
         }
       }
@@ -98,7 +104,7 @@ async function applyTemplateComponents(unit, purchase, template, { includeCards 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [purchase.user_id, c.product_id || null, name || c.product_name, setName, type, c.game || purchase.game,
           image, `Unboxed from: ${purchase.product_name}`, unit.opened_at,
-          componentUnitPrice == null ? null : componentUnitPrice * Math.max(1, Number(c.expected_cards) || 1), qty,
+          componentUnitPrice == null ? null : componentUnitPrice * c.cardCount, qty,
           c.expected_cards == null || c.expected_cards === '' ? null : Number(c.expected_cards), unit.id]
       );
       for (let i = 0; i < qty; i++) {
@@ -141,10 +147,15 @@ router.get('/sealed/purchases', async (req, res) => {
   try {
     const purchases = await db.all(
       `SELECT p.*,
+              source_purchase.product_name AS source_product_name,
+              (SELECT COUNT(*) FROM sealed_units earlier_unit
+                WHERE earlier_unit.purchase_id = source_purchase.id AND earlier_unit.id <= source_unit.id) AS source_unit_number,
               COUNT(u.id) AS unit_count,
               SUM(CASE WHEN u.opened_at IS NULL THEN 1 ELSE 0 END) AS sealed_count,
               SUM(CASE WHEN u.opened_at IS NOT NULL THEN 1 ELSE 0 END) AS opened_count
          FROM sealed_purchases p
+         LEFT JOIN sealed_units source_unit ON source_unit.id = p.source_unit_id
+         LEFT JOIN sealed_purchases source_purchase ON source_purchase.id = source_unit.purchase_id AND source_purchase.user_id = p.user_id
          LEFT JOIN sealed_units u ON u.purchase_id = p.id
         WHERE p.user_id = ?
         GROUP BY p.id
@@ -375,6 +386,97 @@ router.put('/sealed/purchases/:id', async (req, res) => {
   }
 });
 
+// Attach a sealed purchase to one opened unit that it came from. Keeping this
+// relationship on the purchase lets each box instance have different contents.
+router.put('/sealed/purchases/:id/source-unit', async (req, res) => {
+  const { source_unit_id: sourceUnitId } = req.body || {};
+  if (sourceUnitId != null && (!Number.isInteger(Number(sourceUnitId)) || Number(sourceUnitId) < 1)) {
+    return res.status(400).json({ error: 'source_unit_id must be a positive integer or null' });
+  }
+
+  try {
+    const purchase = await db.get(
+      `SELECT id, source_unit_id, unit_price, source_unit_price_original, source_unit_price_saved
+         FROM sealed_purchases WHERE id = ? AND user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    if (!purchase) return res.status(404).json({ error: 'Purchase not found' });
+
+    let sourceUnit = null;
+    if (sourceUnitId != null) {
+      sourceUnit = await db.get(
+        `SELECT u.id, parent.id AS purchase_id
+           FROM sealed_units u
+           JOIN sealed_purchases parent ON parent.id = u.purchase_id
+          WHERE u.id = ? AND parent.user_id = ? AND u.opened_at IS NOT NULL`,
+        [Number(sourceUnitId), req.user.id]
+      );
+      if (!sourceUnit) return res.status(400).json({ error: 'Source unit must belong to you and be opened' });
+      if (Number(sourceUnit.purchase_id) === Number(purchase.id)) {
+        return res.status(400).json({ error: 'A purchase cannot be linked to one of its own units' });
+      }
+
+      const cycle = await db.get(
+        `WITH RECURSIVE descendants(purchase_id) AS (
+           SELECT id FROM sealed_purchases WHERE id = ? AND user_id = ?
+           UNION
+           SELECT child.id
+             FROM sealed_purchases child
+             JOIN sealed_units child_unit ON child_unit.id = child.source_unit_id
+             JOIN descendants parent ON parent.purchase_id = child_unit.purchase_id
+            WHERE child.user_id = ?
+         )
+         SELECT purchase_id FROM descendants WHERE purchase_id = ?`,
+        [purchase.id, req.user.id, req.user.id, sourceUnit.purchase_id]
+      );
+      if (cycle) return res.status(400).json({ error: 'Linking this purchase would create a contents cycle' });
+    }
+
+    const newSourceUnitId = sourceUnit?.id || null;
+    const originalUnitPrice = purchase.source_unit_price_saved
+      ? purchase.source_unit_price_original
+      : purchase.unit_price;
+
+    await withTransaction(async () => {
+      if (!newSourceUnitId) {
+        await db.run(
+          `UPDATE sealed_purchases
+              SET source_unit_id = NULL, unit_price = ?, source_unit_price_original = NULL, source_unit_price_saved = 0
+            WHERE id = ? AND user_id = ?`,
+          [originalUnitPrice, purchase.id, req.user.id]
+        );
+      } else {
+        await db.run(
+          `UPDATE sealed_purchases
+              SET source_unit_id = ?, source_unit_price_original = ?, source_unit_price_saved = 1
+            WHERE id = ? AND user_id = ?`,
+          [newSourceUnitId, originalUnitPrice, purchase.id, req.user.id]
+        );
+      }
+
+      const affectedUnits = new Set([purchase.source_unit_id, newSourceUnitId].filter(Boolean));
+      for (const unitId of affectedUnits) {
+        const source = await db.get(
+          `SELECT u.id, p.unit_price
+             FROM sealed_units u JOIN sealed_purchases p ON p.id = u.purchase_id
+            WHERE u.id = ? AND p.user_id = ?`,
+          [unitId, req.user.id]
+        );
+        if (source?.unit_price != null) {
+          await allocateSealedUnitCost(source.id, req.user.id, source.unit_price);
+        }
+      }
+    });
+    const updated = await db.get(
+      `SELECT unit_price FROM sealed_purchases WHERE id = ? AND user_id = ?`,
+      [purchase.id, req.user.id]
+    );
+    res.json({ success: true, source_unit_id: newSourceUnitId, unit_price: updated.unit_price });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to link sealed purchase', message: error.message });
+  }
+});
+
 // Cascades to sealed_units (ON DELETE CASCADE); any collection rows linked to
 // those units keep the card, just losing the link (ON DELETE SET NULL).
 router.delete('/sealed/purchases/:id', async (req, res) => {
@@ -479,6 +581,8 @@ router.get('/sealed/units', async (req, res) => {
   try {
     const units = await db.all(
       `SELECT u.id, u.opened_at, u.created_at,
+              (SELECT COUNT(*) FROM sealed_units earlier_unit
+                WHERE earlier_unit.purchase_id = p.id AND earlier_unit.id <= u.id) AS unit_number,
               p.id AS purchase_id, p.product_name, p.set_name, p.game, p.image_url,
               p.store, p.purchase_date, p.unit_price, p.expected_cards,
               COALESCE((SELECT SUM(c.quantity) FROM collection c WHERE c.sealed_unit_id = u.id AND c.user_id = p.user_id), 0) AS linked_cards

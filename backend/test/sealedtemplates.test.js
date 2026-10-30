@@ -219,6 +219,78 @@ async function main() {
   assert.strictEqual(res.status, 409, 'direct collection edits must also reject moving a card between products');
   console.log('PASS: cards already linked to a sealed product produce a warning and keep their original link');
 
+  // Individually-added packs can be linked to the specific box they came from,
+  // allowing different boxes of the same product to have different contents.
+  const variableParent = await fetch(`${base}/api/sealed/purchases`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ product_name: 'Variable Contents Box', game: 'pokemon', quantity: 1, unit_price: 100, expected_cards: 100 }),
+  }).then(r => r.json());
+  const variableParentUnit = (await db.get(`SELECT id FROM sealed_units WHERE purchase_id = ?`, [variableParent.purchase.id])).id;
+  await fetch(`${base}/api/sealed/units/${variableParentUnit}/open`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ opened: true }),
+  });
+  const variablePack = await fetch(`${base}/api/sealed/purchases`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ product_name: 'Variable Booster Pack', game: 'pokemon', quantity: 2, unit_price: 7, expected_cards: 10 }),
+  }).then(r => r.json());
+  const variablePackUnit = (await db.get(`SELECT id FROM sealed_units WHERE purchase_id = ?`, [variablePack.purchase.id])).id;
+  await fetch(`${base}/api/sealed/units/${variablePackUnit}/open`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ opened: true }),
+  });
+  res = await fetch(`${base}/api/sealed/purchases/${variablePack.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ source_unit_id: variableParentUnit }),
+  });
+  assert.strictEqual(res.status, 200, 'a sealed pack purchase must link to the specific opened box unit it came from');
+  assert.strictEqual((await res.json()).unit_price, 10, 'a 10-card pack from a 100-card box must receive 10% of the box cost');
+
+  const secondVariablePack = await fetch(`${base}/api/sealed/purchases`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ product_name: 'Second Variable Pack', game: 'pokemon', quantity: 1, unit_price: 9, expected_cards: 10 }),
+  }).then(r => r.json());
+  res = await fetch(`${base}/api/sealed/purchases/${secondVariablePack.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ source_unit_id: variableParentUnit }),
+  });
+  assert.strictEqual(res.status, 200);
+  const repricedPacks = await db.all(
+    `SELECT id, unit_price FROM sealed_purchases WHERE id IN (?, ?) ORDER BY id`,
+    [variablePack.purchase.id, secondVariablePack.purchase.id]
+  );
+  assert.ok(repricedPacks.every(p => Math.abs(p.unit_price - 10) < 0.000001),
+    'linking another pack must allocate cost by each pack card count over the box card count');
+
+  const listedVariablePack = (await fetch(`${base}/api/sealed/purchases`, { headers: asUser(alice) })
+    .then(r => r.json())).purchases.find(p => p.id === variablePack.purchase.id);
+  assert.strictEqual(listedVariablePack.source_unit_id, variableParentUnit);
+  assert.strictEqual(listedVariablePack.source_product_name, 'Variable Contents Box');
+  assert.strictEqual(listedVariablePack.source_unit_number, 1);
+
+  res = await fetch(`${base}/api/sealed/purchases/${variableParent.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ source_unit_id: variablePackUnit }),
+  });
+  assert.strictEqual(res.status, 400, 'linking a box to one of its contents must be rejected to prevent cycles');
+  res = await fetch(`${base}/api/sealed/purchases/${variablePack.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(bob), body: JSON.stringify({ source_unit_id: variableParentUnit }),
+  });
+  assert.strictEqual(res.status, 404, 'users must not link another user\'s sealed purchase');
+
+  const unopenedParent = await fetch(`${base}/api/sealed/purchases`, {
+    method: 'POST', headers: asUser(alice),
+    body: JSON.stringify({ product_name: 'Unopened Parent Box', game: 'pokemon', quantity: 1 }),
+  }).then(r => r.json());
+  const unopenedParentUnit = (await db.get(`SELECT id FROM sealed_units WHERE purchase_id = ?`, [unopenedParent.purchase.id])).id;
+  res = await fetch(`${base}/api/sealed/purchases/${variablePack.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ source_unit_id: unopenedParentUnit }),
+  });
+  assert.strictEqual(res.status, 400, 'a source relationship must point to an opened box unit');
+  res = await fetch(`${base}/api/sealed/purchases/${variablePack.purchase.id}/source-unit`, {
+    method: 'PUT', headers: asUser(alice), body: JSON.stringify({ source_unit_id: null }),
+  });
+  assert.strictEqual(res.status, 200, 'a sealed pack can be unlinked from its source box');
+  assert.strictEqual((await res.json()).unit_price, 7, 'unlinking must restore the pack purchase price from before it was linked');
+  const remainingPack = await db.get(`SELECT unit_price FROM sealed_purchases WHERE id = ?`, [secondVariablePack.purchase.id]);
+  assert.strictEqual(remainingPack.unit_price, 10, 'remaining packs must retain their card-count share of the box cost');
+  console.log('PASS: manually linking sealed packs to opened box units supports variable contents safely');
+
   await db.run(
     `INSERT OR REPLACE INTO card_cache (id, name, supertype, subtypes, types, rarity, set_id, set_name, number, image_url, price_trend, game)
      VALUES ('promo-4', 'Fourth Test Card', 'Pok\u00e9mon', '[]', '[]', 'Common', 'bnb', 'Build & Battle', 'P4', '', 1, 'pokemon')`

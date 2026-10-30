@@ -18,6 +18,7 @@ const { compartmentLabel, isBinderType, rebalanceCompartmentByScheme, stackKey, 
 const { checkedOutAllocation, resolveCompartmentAndPosition, describePlacement, setStackQuantity } = require('../utils/collectionHelpers');
 const { validateDeckAddition } = require('../utils/deckRules');
 const { splitPrice } = require('../utils/splitPrice');
+const { allocateSealedUnitCost } = require('../utils/sealedCostAllocation');
 
 const router = express.Router();
 
@@ -32,53 +33,6 @@ async function conflictingSealedLinks(ids, userId, unitId) {
         AND c.user_id = ? AND c.sealed_unit_id IS NOT NULL AND c.sealed_unit_id != ?`,
     [...ids, userId, unitId]
   );
-}
-
-async function allocateSealedUnitCost(unitId, userId, total, method = 'equal') {
-  const linkedRows = await db.all(
-    `SELECT c.id, c.quantity, COALESCE(cc.price_trend, 0) AS price FROM collection c
-       LEFT JOIN card_cache cc ON cc.id = c.card_id
-      WHERE c.sealed_unit_id = ? AND c.user_id = ?`,
-    [unitId, userId]
-  );
-  const childPurchases = await db.all(
-    `SELECT p.id, p.expected_cards, COUNT(u.id) AS unit_count
-       FROM sealed_purchases p
-       JOIN sealed_units u ON u.purchase_id = p.id
-      WHERE p.source_unit_id = ? AND p.user_id = ?
-      GROUP BY p.id`,
-    [unitId, userId]
-  );
-  const childCardCount = childPurchases.reduce((sum, purchase) =>
-    sum + Math.max(1, Number(purchase.expected_cards) || 1) * Number(purchase.unit_count), 0);
-  const cardCount = linkedRows.reduce((sum, row) => sum + Math.max(1, Number(row.quantity) || 1), 0);
-  const componentCount = cardCount + childCardCount;
-  if (componentCount === 0) return { linkedRows, cardCount, componentCount };
-
-  const totalPrice = Math.round(Number(total) * 100) / 100;
-  const cardTotal = childCardCount
-    ? Math.round(totalPrice * cardCount / componentCount * 100) / 100
-    : totalPrice;
-  if (linkedRows.length) {
-    const copyPrices = linkedRows.flatMap(row =>
-      Array(Math.max(1, Number(row.quantity) || 1)).fill(row.price || 0));
-    const copyShares = splitPrice(copyPrices, cardTotal, method);
-    let copyOffset = 0;
-    for (let i = 0; i < linkedRows.length; i++) {
-      const quantity = Math.max(1, Number(linkedRows[i].quantity) || 1);
-      const rowCost = copyShares.slice(copyOffset, copyOffset + quantity).reduce((sum, share) => sum + share, 0);
-      copyOffset += quantity;
-      await db.run(`UPDATE collection SET purchase_price = ? WHERE id = ? AND user_id = ?`, [rowCost / quantity, linkedRows[i].id, userId]);
-    }
-  }
-  if (childCardCount) {
-    const pricePerCard = (totalPrice - cardTotal) / childCardCount;
-    for (const purchase of childPurchases) {
-      const childUnitPrice = pricePerCard * Math.max(1, Number(purchase.expected_cards) || 1);
-      await db.run(`UPDATE sealed_purchases SET unit_price = ? WHERE id = ? AND user_id = ?`, [childUnitPrice, purchase.id, userId]);
-    }
-  }
-  return { linkedRows, cardCount, componentCount };
 }
 
 // Stamp each result with how many copies the user already owns, so browsing a

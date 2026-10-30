@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Package, ChevronDown, ChevronUp, Unlock, Lock, Trash2, X, Pencil, RefreshCw } from 'lucide-react';
+import { Plus, Package, ChevronDown, ChevronUp, Unlock, Lock, Trash2, X, Pencil, RefreshCw, Link2 } from 'lucide-react';
 import { useT } from '../utils/i18n';
 import { gameLabel, gameOptions } from '../utils/games';
 import { formatPrice } from '../utils/formatPrice';
@@ -85,6 +85,74 @@ function LinkCardsPanel({ unit, purchase, showToast, onLinked }) {
         showToast={showToast}
         onApplied={() => { setSelected([]); onLinked?.(); }}
       />
+    </div>
+  );
+}
+
+function LinkSourcePanel({ purchase, showToast, onSaved }) {
+  const { t } = useT();
+  const [units, setUnits] = useState([]);
+  const [selectedUnitId, setSelectedUnitId] = useState(purchase.source_unit_id ? String(purchase.source_unit_id) : '');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/sealed/units?opened=1')
+      .then(async res => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || t('sealed.errLoad'));
+        setUnits(data.units || []);
+      })
+      .catch(() => showToast?.(t('sealed.errLoad')))
+      .finally(() => setLoading(false));
+  }, [showToast, t]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/sealed/purchases/${purchase.id}/source-unit`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_unit_id: selectedUnitId ? Number(selectedUnitId) : null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast?.(data.error || t('sealed.errSave')); return; }
+      showToast?.(data.unit_price == null
+        ? t('sealed.sourceLinkUpdated')
+        : t('sealed.sourcePriceAllocated', { price: `$${formatPrice(data.unit_price)}` }));
+      onSaved?.();
+    } catch {
+      showToast?.(t('sealed.errSave'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const eligibleUnits = units.filter(unit => unit.purchase_id !== purchase.id);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', padding: '0.4rem 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <label htmlFor={`source-unit-${purchase.id}`} style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+          {t('sealed.linkToProduct')}
+        </label>
+        <select id={`source-unit-${purchase.id}`} className="select-control" value={selectedUnitId}
+          onChange={e => setSelectedUnitId(e.target.value)} disabled={loading || saving}>
+          <option value="">{t('sealed.notLinked')}</option>
+          {eligibleUnits.map(unit => (
+            <option key={unit.id} value={unit.id}>
+              {unit.product_name} · {t('sealed.unitLabel', { n: unit.unit_number })}
+              {unit.set_name ? ` · ${unit.set_name}` : ''}
+            </option>
+          ))}
+        </select>
+        <button type="button" className="btn btn-secondary btn-sm"
+          disabled={loading || saving || (selectedUnitId || '') === (purchase.source_unit_id ? String(purchase.source_unit_id) : '')}
+          onClick={save}>
+          {saving ? t('common.loading') : t('common.save')}
+        </button>
+      </div>
+      <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{t('sealed.sourceLinkHint')}</div>
     </div>
   );
 }
@@ -245,7 +313,11 @@ function PurchaseCard({ purchase, onChanged, onEdit, showToast }) {
             </div>
           )}
           {purchase.source_unit_id && (
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{t('sealed.unboxedNote')}</div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+              {purchase.source_product_name
+                ? t('sealed.unboxedFromProduct', { product: purchase.source_product_name, unit: purchase.source_unit_number })
+                : t('sealed.unboxedNote')}
+            </div>
           )}
         </div>
         <div style={{ textAlign: 'right', fontSize: '0.8rem' }}>
@@ -307,6 +379,13 @@ function PurchaseCard({ purchase, onChanged, onEdit, showToast }) {
             </div>
           ))}
           {purchase.notes && <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{purchase.notes}</div>}
+          <button type="button" className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-start' }}
+            onClick={() => setLinkingUnit(linkingUnit === 'source' ? null : 'source')}>
+            <Link2 size={12} /> {t('sealed.linkToProduct')}
+          </button>
+          {linkingUnit === 'source' && (
+            <LinkSourcePanel purchase={purchase} showToast={showToast} onSaved={() => { setLinkingUnit(null); onChanged?.(); }} />
+          )}
         </div>
       )}
     </div>

@@ -46,7 +46,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       .finally(() => setLoading(false));
   }, [productId, productName]);
 
-  useEffect(() => {
+  const loadKnownCounts = () => {
     fetch('/api/sealed/templates')
       .then(r => r.json())
       .then(d => {
@@ -61,7 +61,8 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
         setKnownCounts({ byId, byName });
       })
       .catch(() => {});
-  }, []);
+  };
+  useEffect(() => { loadKnownCounts(); }, []);
 
   const searchCards = async (page = 1) => {
     if (!cardQuery.trim() && !cardSet.trim()) { setCardResults([]); return; }
@@ -86,11 +87,21 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
     setCardQuery(''); setCardSet(''); setCardResults([]); setShowCardSearch(false);
   };
 
+  // Saved recipes first, then anything already entered in this unsaved recipe.
+  const lookupCount = (product) => {
+    const lowerName = String(product.name || '').toLowerCase();
+    const saved = knownCounts.byId[product.product_id] ?? knownCounts.byName[lowerName];
+    if (saved != null) return saved;
+    const sibling = components.find(c => c.component_type === 'product' && c.expected_cards !== '' && c.expected_cards != null
+      && ((product.product_id && c.product_id === product.product_id) || String(c.product_name || '').toLowerCase() === lowerName));
+    return sibling ? sibling.expected_cards : '';
+  };
+
   const addProduct = (product) => {
     setComponents(c => [...c, {
       component_type: 'product', quantity: 1,
       product_id: product.product_id || null, product_name: product.name, sealed_type: product.sealed_type || null, game,
-      expected_cards: knownCounts.byId[product.product_id] ?? knownCounts.byName[String(product.name || '').toLowerCase()] ?? '',
+      expected_cards: lookupCount(product),
       label: product.name,
     }]);
     setShowProductPicker(false);
@@ -112,6 +123,7 @@ export default function SealedTemplateEditor({ productId, productName, game, sho
       if (!res.ok) { showToast?.(data.error || t('sealed.errSave')); return; }
       setExistingId(data.template.id);
       showToast?.(t('sealed.recipeSaved'));
+      loadKnownCounts();
     } catch {
       showToast?.(t('sealed.errSave'));
     } finally {

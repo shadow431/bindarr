@@ -745,6 +745,12 @@ async function initDb() {
   if (!sealedPurchaseCols.some(c => c.name === 'source_unit_id')) {
     await run(`ALTER TABLE sealed_purchases ADD COLUMN source_unit_id INTEGER REFERENCES sealed_units(id) ON DELETE SET NULL`);
   }
+  if (!sealedPurchaseCols.some(c => c.name === 'source_unit_price_original')) {
+    await run(`ALTER TABLE sealed_purchases ADD COLUMN source_unit_price_original REAL`);
+  }
+  if (!sealedPurchaseCols.some(c => c.name === 'source_unit_price_saved')) {
+    await run(`ALTER TABLE sealed_purchases ADD COLUMN source_unit_price_saved INTEGER NOT NULL DEFAULT 0`);
+  }
   const sealedTemplateComponentCols = await all(`PRAGMA table_info(sealed_template_components)`);
   if (!sealedTemplateComponentCols.some(c => c.name === 'expected_cards')) {
     await run(`ALTER TABLE sealed_template_components ADD COLUMN expected_cards INTEGER`);
