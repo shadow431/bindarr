@@ -23,7 +23,7 @@ router.get('/:share_token/containers/:id', async (req, res) => {
     }
 
     const location = await db.get(
-      `SELECT id, name, type, sort_order, allow_stacking FROM locations WHERE id = ? AND user_id = ?`,
+      `SELECT id, name, type, sort_order, allow_stacking, page_columns FROM locations WHERE id = ? AND user_id = ?`,
       [id, owner.id]
     );
     if (!location) return res.status(404).json({ error: 'Container not found.' });
@@ -107,6 +107,8 @@ router.get('/:share_token', async (req, res) => {
         cc.supertype,
         cc.subtypes,
         cc.types,
+        -- For the colour sort, which buckets by colour identity.
+        cc.color_identity,
         cc.rarity,
         cc.set_id,
         cc.set_name,

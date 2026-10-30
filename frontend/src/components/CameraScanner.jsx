@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, RefreshCw, AlertTriangle, X, Zap, ZapOff, Settings, ScanLine, ListFilter, Layers, Search } from 'lucide-react';
+import { Camera, RefreshCw, AlertTriangle, X, Zap, ZapOff, Settings, ScanLine, ListFilter, Layers, Search, SwitchCamera } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { getCardDisplayName } from '../utils/langHelper';
 import { priceText } from '../utils/formatPrice';
@@ -14,6 +14,7 @@ import { requestDetect, stopDetect, smoothQuad, meanCornerDrift, DETECT_W } from
 import { getPerspectiveTransform, warpPerspective } from '../../../shared/imgproc.mjs';
 import { shouldCapture, shouldRearm, autoStatusKey } from '../utils/autoCapture';
 import { zoomRange, initialZoom } from '../utils/cameraZoom';
+import { pickPreferredCamera, nextCamera } from '../utils/cameraPick';
 import { defaultGame, gameOptions, showGamePicker, isGameEnabled } from '../utils/games';
 import { isNative } from '../apiBase';
 import { useT } from '../utils/i18n';
@@ -88,6 +89,45 @@ const SCAN_PROFILES = [
   { label: 'Balanced', uploadW: 900,  countdown: 2, recallK: 120, orb: 400 },
   { label: 'Accurate', uploadW: 1280, countdown: 2, recallK: 250, orb: 500 },
 ];
+
+// deviceId of the lens to scan with (the user's pick, or the main lens the
+// heuristic in startCamera moved to). Absent: let facingMode choose.
+const CAMERA_KEY = 'scan_camera_id';
+
+const stopTracks = (s) => s?.getTracks().forEach(track => track.stop());
+
+// One place for the stream constraints, so a picked lens gets the same
+// resolution and zoom request as the default one.
+const openCamera = (deviceId) => navigator.mediaDevices.getUserMedia({
+  video: {
+    // A picked lens is exact; otherwise use the back camera on phones.
+    ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' }),
+    // 1080p, not 720p. The guide box crops to roughly a third of the frame,
+    // so 720p delivered a ~250px-wide card to a pipeline whose reference
+    // images are 500px — and accuracy falls off a cliff right there.
+    // Measured on 100 MTG cards: exact-printing 76.0% at a 250px card,
+    // 91.0% at 420px, 90.0% at 800px. `ideal` rather than `min` so a camera
+    // that cannot manage it degrades instead of failing getUserMedia.
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
+    // Chrome only reports caps.zoom (and honours zoom constraints) when the
+    // stream was requested with it. Browsers that don't know it ignore it.
+    zoom: true
+  },
+  audio: false
+});
+
+// Cameras for the lens picker. Never fails the camera open over it: a browser
+// without enumerateDevices just gets no picker.
+const listVideoInputs = async () => {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices?.();
+    return (devices || []).filter(d => d.kind === 'videoinput' && d.deviceId);
+  } catch (err) {
+    console.warn('enumerateDevices failed:', err);
+    return [];
+  }
+};
 
 // The right card in the wrong language. Korean, Japanese and Chinese Pokémon sets
 // are their own releases rather than localised editions of the English ones, so no
@@ -226,6 +266,11 @@ function CameraScanner({ onAddSuccess, showToast }) {
   // Camera zoom: same shape as exposure, from caps.zoom. Hidden when unsupported.
   const [zoomCaps, setZoomCaps] = useState(null);
   const [zoom, setZoom] = useState(1);
+  // Every camera the device has (enumerateDevices `videoinput`), for the lens
+  // picker. Filled after the first open: labels only exist once permission is
+  // granted. The picker stays hidden with fewer than two.
+  const [videoInputs, setVideoInputs] = useState([]);
+  const switchingCamera = useRef(false); // one lens switch at a time
   // Which game is being fed in — the user's pick, not an inference. Persisted:
   // a scanning run is one game at a time, and re-picking it on every camera open
   // was friction for nothing. Falls back to the Settings default game if the
@@ -522,9 +567,14 @@ function CameraScanner({ onAddSuccess, showToast }) {
     streamRef.current = stream;
   }, [stream]);
 
-  // Clean up camera stream on unmount
+  // Clean up camera stream on unmount. `unmounted` lets a camera open that is
+  // still in flight (startCamera/switchCamera await getUserMedia, sometimes
+  // twice) release the stream it gets instead of leaving the camera on.
+  const unmounted = useRef(false);
   useEffect(() => {
+    unmounted.current = false;
     return () => {
+      unmounted.current = true;
       streamRef.current?.getTracks().forEach(track => track.stop());
     };
   }, []);
@@ -957,26 +1007,53 @@ function CameraScanner({ onAddSuccess, showToast }) {
       showToast(t('scan.errCameraInsecure', { origin: window.location.origin, port: window.location.port || '80' }));
       return;
     }
+    // A retry must release whatever is still open: Android cannot hold two
+    // cameras at once, and a second open would fail as NotReadableError.
+    stopTracks(streamRef.current);
     try {
-      const constraints = {
-        video: {
-          facingMode: 'environment', // Use back camera on phones
-          // 1080p, not 720p. The guide box crops to roughly a third of the frame,
-          // so 720p delivered a ~250px-wide card to a pipeline whose reference
-          // images are 500px — and accuracy falls off a cliff right there.
-          // Measured on 100 MTG cards: exact-printing 76.0% at a 250px card,
-          // 91.0% at 420px, 90.0% at 800px. `ideal` rather than `min` so a camera
-          // that cannot manage it degrades instead of failing getUserMedia.
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          // Chrome only reports caps.zoom (and honours zoom constraints) when the
-          // stream was requested with it. Browsers that don't know it ignore it.
-          zoom: true
-        },
-        audio: false
-      };
-      
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      // The lens picked last time (by the user or by the heuristic below). Exact,
+      // so the browser can't swap in another lens; a camera that has gone (new
+      // phone, cleared site data rotates deviceIds) falls back to the default.
+      const saved = localStorage.getItem(CAMERA_KEY);
+      let mediaStream = null;
+      if (saved) {
+        try {
+          mediaStream = await openCamera(saved);
+        } catch (err) {
+          if (err?.name !== 'OverconstrainedError' && err?.name !== 'NotFoundError') throw err;
+          localStorage.removeItem(CAMERA_KEY);
+        }
+      }
+      const usedSaved = !!mediaStream;
+      if (!mediaStream) mediaStream = await openCamera(null);
+      if (unmounted.current) { stopTracks(mediaStream); return; }
+
+      const inputs = await listVideoInputs();
+      if (unmounted.current) { stopTracks(mediaStream); return; }
+      setVideoInputs(inputs);
+
+      // facingMode 'environment' lets the browser open ANY back lens, and on
+      // multi-lens Android phones it often opens the macro one, which cannot
+      // focus on a card at arm's length. Nothing saved: move to the main lens
+      // once, and remember it so the next open goes straight there.
+      if (!usedSaved) {
+        const track = mediaStream.getVideoTracks()[0];
+        const better = pickPreferredCamera(inputs, { deviceId: track?.getSettings?.().deviceId, label: track?.label });
+        if (better) {
+          stopTracks(mediaStream);
+          try {
+            mediaStream = await openCamera(better);
+            localStorage.setItem(CAMERA_KEY, better);
+          } catch (err) {
+            console.warn('Preferred camera failed, keeping the default:', err);
+            mediaStream = await openCamera(null);
+          }
+          if (unmounted.current) { stopTracks(mediaStream); return; }
+        }
+      }
+
+      streamRef.current = mediaStream;
+      setIsTorchOn(false);
       setStream(mediaStream);
       setCameraActive(true);
     } catch (err) {
@@ -985,6 +1062,43 @@ function CameraScanner({ onAddSuccess, showToast }) {
       showToast(t('scan.errCameraAccess'));
     }
   };
+
+  // Lens picker / quick-switch. The old tracks stop BEFORE the new open (Android
+  // cannot hold two cameras), which also turns the torch off — so its state is
+  // reset. Zoom and exposure are re-read from the new track by the [stream]
+  // effect, which restores the saved zoom when this lens can do it.
+  const switchCamera = async (deviceId) => {
+    const current = stream?.getVideoTracks?.()[0]?.getSettings?.().deviceId;
+    if (!deviceId || deviceId === current || switchingCamera.current) return;
+    switchingCamera.current = true;
+    stopTracks(streamRef.current);
+    setIsTorchOn(false);
+    let next = null;
+    try {
+      next = await openCamera(deviceId);
+      localStorage.setItem(CAMERA_KEY, deviceId);
+    } catch (err) {
+      console.warn('Camera switch failed:', err);
+      showToast(t('scan.errCameraSwitch', { error: err?.name || err?.message || t('scan.unknownError') }));
+      // Don't leave the preview dead: go back to whatever the browser picks.
+      try { next = await openCamera(null); } catch (e) { console.error('Error reopening camera:', e); }
+    }
+    switchingCamera.current = false;
+    if (unmounted.current) { stopTracks(next); return; }
+    if (!next) {
+      setStream(null);
+      setCameraActive(false);
+      setCameraErrorKey('scan.errCameraPermissions');
+      return;
+    }
+    streamRef.current = next;
+    setStream(next);
+  };
+
+  // What the picker calls a camera: its own label, or "Camera N" while labels
+  // are withheld (no permission yet) or the device reports none.
+  const cameraLabel = (d, i) => d.label || t('scan.cameraN', { n: i + 1 });
+  const activeCameraId = stream?.getVideoTracks?.()[0]?.getSettings?.().deviceId || '';
 
   // No stopCamera: the stop button is gone. The camera lives exactly as long as
   // this component — leaving the scan tab unmounts it, and the unmount cleanup
@@ -1802,6 +1916,39 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 {isTorchOn ? <Zap size={18} /> : <ZapOff size={18} />}
               </button>
 
+            {/* Quick lens switch, under the torch. On the camera view rather than
+                only in settings: when the browser opened the wrong lens the
+                preview is blurry, and the fix has to be where the user is looking.
+                The full list (with names) is the picker in scan settings. */}
+            {videoInputs.length >= 2 && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                title={t('scan.switchCamera')}
+                aria-label={t('scan.switchCamera')}
+                style={{
+                  position: 'absolute',
+                  top: 'calc(1rem + 46px)',
+                  right: '1rem',
+                  zIndex: 20,
+                  borderRadius: '50%',
+                  padding: '0.6rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const id = nextCamera(videoInputs, activeCameraId);
+                  const i = videoInputs.findIndex(d => d.deviceId === id);
+                  if (id) { switchCamera(id); showToast(cameraLabel(videoInputs[i], i)); }
+                }}
+              >
+                <SwitchCamera size={18} />
+              </button>
+            )}
+
             {/* Auto-scan state, where the capture countdown used to be. There is no
                 clock to show any more — what the user needs to know is whether the
                 scanner is waiting on them (no card / hold still) or on itself
@@ -2141,6 +2288,29 @@ function CameraScanner({ onAddSuccess, showToast }) {
                 <span>{t('scan.detailSlow')}</span>
               </div>
             </div>
+
+            {/* Lens picker: only with two or more cameras. Multi-lens phones expose
+                each lens as its own camera, and the browser's default can be the
+                macro or ultra-wide one. The pick is remembered (scan_camera_id). */}
+            {videoInputs.length >= 2 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', background: 'rgba(0,0,0,0.2)', padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-sm)' }}>
+                <label htmlFor="scan-camera" style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{t('scan.cameraLens')}</label>
+                <select
+                  id="scan-camera"
+                  className="select-control"
+                  value={activeCameraId}
+                  onChange={(e) => switchCamera(e.target.value)}
+                  style={{ fontSize: '0.8rem' }}
+                >
+                  {/* The live lens can be missing from the list (getSettings
+                      without deviceId); an empty option keeps the select honest. */}
+                  {!videoInputs.some(d => d.deviceId === activeCameraId) && <option value={activeCameraId} />}
+                  {videoInputs.map((d, i) => (
+                    <option key={d.deviceId} value={d.deviceId}>{cameraLabel(d, i)}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Zoom: only rendered when the camera track supports it. Slider only,
                 no pinch — a pinch on the preview already resizes the guide box. */}

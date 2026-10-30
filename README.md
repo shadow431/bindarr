@@ -139,7 +139,7 @@ The HTTPS certificate is self-signed and generated on first start into the volum
 | Tag | Points at |
 | --- | --- |
 | `latest` | newest release — use this |
-| `1.8`, `1.8.7` | a specific release, if you want to control upgrades |
+| `1.8`, `1.8.8` | a specific release, if you want to control upgrades |
 | `edge` | newest `main` commit, including unreleased work |
 | `sha-<short>` | one exact commit |
 
@@ -178,6 +178,8 @@ All optional.
 #### SSO with a private CA
 
 Register `<PUBLIC_BASE_URL>/api/auth/oidc/callback` as the redirect URI at your identity provider (e.g. `https://cards.example.com/api/auth/oidc/callback`). Without `PUBLIC_BASE_URL` it is built from the request's host; `OIDC_REDIRECT_URI` overrides it outright.
+
+The Android and iOS apps use that same redirect URI: SSO opens in the system browser, and the server's callback hands the login back to the app through the `bindarr://oidc` link with a one-time code. There is no extra redirect URI to register at the provider.
 
 If the provider's certificate is signed by your own root CA, SSO login fails with `fetch failed` and the container log names a certificate error such as `UNABLE_TO_VERIFY_LEAF_SIGNATURE` or `SELF_SIGNED_CERT_IN_CHAIN`. Node ships its own CA list and does not read the operating system's certificate store, so adding the CA to the container's system store does not help. Mount the CA's PEM file and point `NODE_EXTRA_CA_CERTS` at it:
 
@@ -328,7 +330,7 @@ Which marketplace can price a printing depends on where it is sold, so the sourc
 
 | Card | Priced from |
 | --- | --- |
-| Magic, any language | Scryfall — TCGplayer's USD price, or Cardmarket's EUR one when TCGplayer has no listing (most non-English printings) |
+| Magic, any language | Scryfall — TCGplayer's USD price, or Cardmarket's EUR one when TCGplayer has no listing (most non-English printings). **Admin → Instance Settings → Magic price source** flips this to Cardmarket EUR first, TCGplayer USD as the fallback |
 | Pokémon via pokemontcgapi.com | Cardmarket EUR when available, otherwise TCGplayer USD, for the printing's language |
 | Pokémon via existing providers, English or Japanese | TCGplayer, via TCGCSV, in USD |
 | Pokémon via existing providers, other languages | the **English** printing's TCGplayer price, labelled as such — TCGplayer runs no German, Korean or Chinese catalogue |

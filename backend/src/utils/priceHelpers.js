@@ -75,29 +75,40 @@ const isVintageSet = (setId) => {
 // was writing a fresh row per card per restart — 17k rows in a single day, all
 // the same number. A price series only needs the points where the price
 // changed; the flat stretches between them are implied by the line.
+//
+// Each point carries the currency it was quoted in, read off the card_cache row
+// the caller has just written (every caller caches before recording). Reading it
+// here rather than taking it as an argument keeps the nine call sites unchanged
+// and means none of them can pass a currency that disagrees with the row. The
+// same number in a different currency is a new point: it starts the new series
+// the readers in routes/stats.js filter to.
 async function recordPrice(cardId, price) {
   if (!cardId || !(price > 0)) return false;
   const db = require('../db');
+  const card = await db.get(`SELECT price_currency FROM card_cache WHERE id = ?`, [cardId]);
+  const currency = (card && card.price_currency) || 'USD';
   const last = await db.get(
-    `SELECT price FROM price_history WHERE card_id = ? ORDER BY recorded_at DESC LIMIT 1`,
+    `SELECT price, currency FROM price_history WHERE card_id = ? ORDER BY recorded_at DESC LIMIT 1`,
     [cardId]
   );
-  if (last && last.price === price) return false;
+  // A legacy point with no currency is taken to be in the card's current one,
+  // which is what the migration backfilled it to anyway.
+  if (last && last.price === price && (last.currency || currency) === currency) return false;
   // Millisecond resolution, not CURRENT_TIMESTAMP. recorded_at is part of the
   // primary key, and the default is second-resolution — so two genuine price
   // movements in the same second collided and the second one was silently
   // dropped by OR IGNORE. %f keeps the guard while making that effectively
   // impossible. parseSqliteUtc already reads the fractional form correctly.
   const res = await db.run(
-    `INSERT OR IGNORE INTO price_history (card_id, price, recorded_at)
-     VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))`,
-    [cardId, price]
+    `INSERT OR IGNORE INTO price_history (card_id, price, currency, recorded_at)
+     VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))`,
+    [cardId, price, currency]
   );
   if (res && res.changes === 0) {
     await db.run(
-      `INSERT OR IGNORE INTO price_history (card_id, price, recorded_at)
-       VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', '+1 millisecond'))`,
-      [cardId, price]
+      `INSERT OR IGNORE INTO price_history (card_id, price, currency, recorded_at)
+       VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', '+1 millisecond'))`,
+      [cardId, price, currency]
     );
   }
   return true;

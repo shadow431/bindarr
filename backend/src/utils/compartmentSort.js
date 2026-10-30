@@ -109,10 +109,55 @@ const PRINTING_ORDER_FOILS_FIRST = cardOrder.printingFoilsFirst;
 const LANGUAGE_ORDER = cardOrder.language;
 const WUBRG_ORDER = cardOrder.wubrg;
 
+const MTG_CARD_TYPE_ORDER = cardOrder.mtgCardType;
+
 function typeCategory(types) {
   const t = Array.isArray(types) ? types : safeJsonParse(types, []);
   if (t.length > 1) return 'Multicolor';
   return t[0] || 'Colorless';
+}
+
+// `types` holds colours for an MTG card (the deck colour charts read it that
+// way), so the card's type line — split into words in `subtypes` — is what a
+// "type" sort has to read instead. `supertype` is the fallback for rows that
+// were selected without the game column.
+function isMtgCard(card) {
+  return !!card && (card.game === 'mtg' || card.supertype === 'MTG');
+}
+
+// One card-type category per MTG card; see shared/cardOrder.json for why the
+// pick order is what it is. Mirrors mtgTypeCategory in frontend/src/utils/cardSort.js.
+function mtgTypeCategory(subtypes) {
+  const list = Array.isArray(subtypes) ? subtypes : safeJsonParse(subtypes, []);
+  const words = new Set((Array.isArray(list) ? list : []).map(w => String(w).toLowerCase()));
+  return cardOrder.mtgCardTypePick.find(type => words.has(type.toLowerCase())) || 'Other';
+}
+
+// The category a card sorts, groups and is filed under for the 'type' field:
+// card type for Magic, the type/ink list as before for Pokémon and Lorcana.
+function cardTypeCategory(card) {
+  if (isMtgCard(card)) return mtgTypeCategory(card.subtypes);
+  return typeCategory(card && card.types);
+}
+
+function typeRank(card) {
+  const order = isMtgCard(card) ? MTG_CARD_TYPE_ORDER : POKEMON_TYPE_ORDER;
+  return order[cardTypeCategory(card)] || 50;
+}
+
+// What getSortCategory returned for a card before issue #88, when it differs
+// from today's answer: an MTG card under a 'type' scheme used to file by
+// colour. compartment_assignments written back then still name colours
+// ("Red", "Multicolor"), so filing accepts either rather than silently
+// dropping those pages out of rotation.
+function legacySortCategory(card, sortOrder) {
+  if (!isMtgCard(card) || sortPrimaryField(sortOrder) !== 'type') return null;
+  return typeCategory(card.types);
+}
+
+function assignedTo(compartment, cardCat, legacyCat) {
+  const filters = (compartment && compartment.assignedFilters) || [];
+  return (!!cardCat && filters.includes(cardCat)) || (!!legacyCat && filters.includes(legacyCat));
 }
 
 function getColorCategory(card) {
@@ -191,12 +236,9 @@ function sortCards(cards, sortOrder, foilSorting) {
         case 'printing':
           cmp = (printingOrder[a.printing] || 10) - (printingOrder[b.printing] || 10);
           break;
-        case 'type': {
-          const orderA = POKEMON_TYPE_ORDER[typeCategory(a.types)] || 50;
-          const orderB = POKEMON_TYPE_ORDER[typeCategory(b.types)] || 50;
-          cmp = orderA - orderB;
+        case 'type':
+          cmp = typeRank(a) - typeRank(b);
           break;
-        }
         case 'language': {
           const la = LANGUAGE_ORDER[a.language] || 99;
           const lb = LANGUAGE_ORDER[b.language] || 99;
@@ -447,7 +489,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
 
   const allLocationCards = await dbClient.all(`
     SELECT c.id as entry_id, c.card_id, c.compartment_id, c.position, c.quantity, c.condition, c.printing, c.language, c.purchase_price, c.added_at, c.is_trade, c.favorite, c.list_type,
-           cc.name, cc.printed_name, cc.supertype, cc.types, cc.subtypes, cc.rarity, cc.set_id, cc.set_name, cc.number, cc.image_url,
+           cc.name, cc.printed_name, cc.supertype, cc.game, cc.types, cc.subtypes, cc.rarity, cc.set_id, cc.set_name, cc.number, cc.image_url,
            cc.price_trend, cc.price_normal, cc.price_holofoil, cc.price_reverse_holofoil, cc.cmc, cc.color_identity
     FROM collection c
     JOIN card_cache cc ON c.card_id = cc.id
@@ -553,6 +595,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
 
   cardMetadata.price_trend = resolveCardPrice(cardMetadata);
   const cardCat = getSortCategory(cardMetadata, location.sort_order);
+  const legacyCat = legacySortCategory(cardMetadata, location.sort_order);
 
   const dynamicCatsByCompId = new Map();
   compartments.forEach(c => {
@@ -565,7 +608,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
     if (!compartmentAcceptsCard(c, cardMetadata)) return false;
 
     if (c.assignedFilters && c.assignedFilters.length > 0) {
-      return cardCat && c.assignedFilters.includes(cardCat);
+      return assignedTo(c, cardCat, legacyCat);
     }
     
     if (location.type !== 'binder') {
@@ -608,7 +651,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
     pool = compartments.filter(c =>
       compartmentAcceptsCard(c, cardMetadata) &&
       (!(c.assignedFilters && c.assignedFilters.length > 0) ||
-      (cardCat && c.assignedFilters.includes(cardCat)))
+      assignedTo(c, cardCat, legacyCat))
     );
   }
 
@@ -655,7 +698,10 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
     language: cardMetadata.language || 'English',
     name: cardMetadata.name || '',
     supertype: cardMetadata.supertype || '',
+    game: cardMetadata.game || null,
     types: cardMetadata.types || [],
+    // An MTG card's type sort reads its type line, which lives here.
+    subtypes: cardMetadata.subtypes || [],
     rarity: cardMetadata.rarity || '',
     set_name: cardMetadata.set_name || '',
     number: cardMetadata.number || '0',
@@ -668,7 +714,10 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
   const targetIndex = sorted.findIndex(c => c.entry_id === -1);
   if (targetIndex === -1) return null;
 
-  let scheme = SORT_SCHEME_LABELS[location.sort_order] || location.sort_order;
+  // 'type-name' files a Magic card by card type, not energy type.
+  let scheme = location.sort_order === 'type-name' && isMtgCard(cardMetadata)
+    ? 'card type'
+    : (SORT_SCHEME_LABELS[location.sort_order] || location.sort_order);
   if (typeof scheme === 'string' && scheme.startsWith('[')) {
     try {
       const parsed = JSON.parse(scheme);
@@ -723,8 +772,9 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
       if (afterCard) reason += `, right after ${afterCard.name}`;
       else if (beforeCard) reason += `, right before ${beforeCard.name}`;
       else reason += ` — first card here`;
-      if (cardCat && (target.assignedFilters || []).includes(cardCat)) {
-        reason += ` (${compartmentLabel(target, location.type)} is assigned "${cardCat}")`;
+      if (assignedTo(target, cardCat, legacyCat)) {
+        const matched = (target.assignedFilters || []).includes(cardCat) ? cardCat : legacyCat;
+        reason += ` (${compartmentLabel(target, location.type)} is assigned "${matched}")`;
       }
       return {
         location_id: location.id,
@@ -745,7 +795,7 @@ async function recommendSlot(database, location, cardMetadata, overrideCompartme
 async function rebalanceCompartmentByScheme(database, compartmentId, sortOrder, foilSorting) {
   const dbClient = database || db;
   const cards = await dbClient.all(
-    `SELECT c.*, cc.name, cc.printed_name, cc.set_id, cc.set_id as set_code, cc.set_name, cc.number, cc.types, cc.rarity, cc.price_trend
+    `SELECT c.*, cc.name, cc.printed_name, cc.set_id, cc.set_id as set_code, cc.set_name, cc.number, cc.types, cc.subtypes, cc.supertype, cc.game, cc.rarity, cc.price_trend
      FROM collection c
      LEFT JOIN card_cache cc ON c.card_id = cc.id
      WHERE c.compartment_id = ?
@@ -796,8 +846,10 @@ async function rebalanceCompartmentByScheme(database, compartmentId, sortOrder, 
   }
 }
 
-function getSortCategory(card, sortOrder) {
-  if (!card || !sortOrder || sortOrder === 'custom') return null;
+// The field a container files by (its first divider, else its first criterion),
+// or null when it has none.
+function sortPrimaryField(sortOrder) {
+  if (!sortOrder || sortOrder === 'custom') return null;
   let criteria = [];
   if (typeof sortOrder === 'string') {
     if (sortOrder.startsWith('[')) {
@@ -815,7 +867,13 @@ function getSortCategory(card, sortOrder) {
     return null;
   }
 
-  const primary = dividers.length > 0 ? dividers[0].by : criteria[0].by;
+  return dividers.length > 0 ? dividers[0].by : criteria[0].by;
+}
+
+function getSortCategory(card, sortOrder) {
+  if (!card) return null;
+  const primary = sortPrimaryField(sortOrder);
+  if (!primary) return null;
 
   if (primary === 'name') return card.name ? card.name.charAt(0).toUpperCase() : '?';
   if (primary === 'set') {
@@ -827,15 +885,7 @@ function getSortCategory(card, sortOrder) {
   if (primary === 'color_identity' || primary === 'color') {
     return getColorCategory(card);
   }
-  if (primary === 'type') {
-    let types = [];
-    if (card.types) {
-      try {
-        types = typeof card.types === 'string' ? JSON.parse(card.types) : card.types;
-      } catch (e) { types = Array.isArray(card.types) ? card.types : []; }
-    }
-    return typeCategory(types);
-  }
+  if (primary === 'type') return cardTypeCategory(card);
   if (primary === 'price') {
     const p = card.price_trend || 0;
     if (p >= 100) return '$100+';
@@ -864,6 +914,8 @@ module.exports = {
   compartmentAcceptsCard,
   loadSetsCache,
   getSortCategory,
+  cardTypeCategory,
+  mtgTypeCategory,
   prepareCardMetadata,
   safeJsonParse,
   stackKey,

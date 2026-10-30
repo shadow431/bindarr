@@ -4,18 +4,15 @@ import { Lock, Edit3 } from 'lucide-react';
 import { getPrintingBadgeStyle, getPrintingBadgeLabel, getFoilOverlayClass } from '../utils/cardPrinting';
 import { getCardRarityBorder, getRarityBadgeLabel, getRarityBadgeStyle } from '../utils/cardRarity';
 import { priceText } from '../utils/formatPrice';
-import { typeCategory } from '../utils/cardSort';
+import { cardTypeCategory, colorCategory } from '../utils/cardSort';
 import { isBinderType } from '../utils/cardOptions';
 import { displayName } from '../utils/languages';
 import { useLongPress } from '../utils/useLongPress';
+import { pageColumns as resolvePageColumns } from '../utils/binderLayout';
 import CardImage from './CardImage';
 import { useT } from '../utils/i18n';
 
 const infoChipStyle = { fontSize: '0.6rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', background: 'rgba(255,255,255,0.08)', color: 'var(--text-secondary)', whiteSpace: 'nowrap' };
-
-function pocketColumns(capacity) {
-  return Math.max(1, Math.round(Math.sqrt(capacity || 1)));
-}
 
 // Collapse copies of the same card into one pocket, keyed the way the server
 // counts occupancy on a stacking container (card, printing and language; not
@@ -50,25 +47,10 @@ function categoryForField(card, field, setsList = []) {
       return idx >= 0 ? `${idx + 1}. ${card.set_name}` : card.set_name;
     }
     case 'color_identity':
-    case 'color': {
-      let ci = 'Colorless';
-      if (typeof card.color_identity === 'string') {
-        try { const p = JSON.parse(card.color_identity); if (p.length > 0) ci = p[0]; } catch { /* ignore */ }
-      } else if (Array.isArray(card.color_identity) && card.color_identity.length > 0) {
-        ci = card.color_identity[0];
-      }
-      const names = { 'W': 'White', 'U': 'Blue', 'B': 'Black', 'R': 'Red', 'G': 'Green' };
-      return names[ci] || ci || 'Colorless';
-    }
-    case 'type': {
-      let types = [];
-      if (card.types) {
-        try {
-          types = typeof card.types === 'string' ? JSON.parse(card.types) : card.types;
-        } catch (e) { types = Array.isArray(card.types) ? card.types : []; }
-      }
-      return typeCategory(types);
-    }
+    case 'color':
+      return colorCategory(card);
+    case 'type':
+      return cardTypeCategory(card);
     case 'cmc':
       return `CMC ${card.cmc != null && card.cmc !== '' ? card.cmc : '?'}`;
     case 'rarity':
@@ -281,6 +263,9 @@ export default function CompartmentView({
   // Container has allow_stacking: every copy of a card shares one pocket instead
   // of taking one each. See stackPocketCards.
   allowStacking = false,
+  // Binder's locations.page_columns: pockets per row on a binder page. null is
+  // automatic, worked out from the page's capacity (see utils/binderLayout).
+  pageColumns = null,
   sortOrder = 'custom',
   setsList = [],
   highlightPositions = [], // Array of positions to highlight (1-indexed)
@@ -503,7 +488,7 @@ export default function CompartmentView({
   if (!compartment) return null;
 
   if (isBinder) {
-    const cols = pocketColumns(compartment.capacity);
+    const cols = resolvePageColumns(compartment.capacity, pageColumns);
     const pocketCards = allowStacking ? stackPocketCards(cards) : cards;
     let maxSlotFromCards = compartment.capacity || 1;
     pocketCards.forEach(c => {

@@ -38,6 +38,7 @@ const SORT_CRITERIA = {
   'rarity-desc': [{ by: 'rarity', dir: 'desc' }, { by: 'name', dir: 'asc' }],
   'rarity-asc': [{ by: 'rarity', dir: 'asc' }, { by: 'name', dir: 'asc' }],
   'type-asc': [{ by: 'type', dir: 'asc' }, { by: 'name', dir: 'asc' }],
+  'color-asc': [{ by: 'color', dir: 'asc' }, { by: 'name', dir: 'asc' }],
   'language-asc': [{ by: 'language', dir: 'asc' }, { by: 'name', dir: 'asc' }],
 };
 
@@ -328,7 +329,7 @@ function SharedCollection({ shareToken }) {
             <label>{t('collection.sortBy')}</label>
             <select className="select-control" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
               <option value="added-newest">{t('shared.sortRecent')}</option>
-              {['name-asc', 'name-desc', 'price-desc', 'price-asc', 'qty-desc', 'set-asc', 'number-asc', 'type-asc', 'rarity-desc', 'rarity-asc', 'language-asc']
+              {['name-asc', 'name-desc', 'price-desc', 'price-asc', 'qty-desc', 'set-asc', 'number-asc', 'type-asc', 'color-asc', 'rarity-desc', 'rarity-asc', 'language-asc']
                 .map(key => <option key={key} value={key}>{t(`collection.sort.${key}`)}</option>)}
             </select>
           </div>

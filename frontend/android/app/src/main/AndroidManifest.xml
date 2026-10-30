@@ -20,6 +20,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- SSO return (issue #94): the server's OIDC callback hands the login
+                 back to the app as bindarr://oidc?code=..., delivered to the WebView
+                 by @capacitor/app's appUrlOpen. singleTask above keeps it in the
+                 running activity instead of stacking a second copy of the app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="bindarr" android:host="oidc" />
+            </intent-filter>
         </activity>
 
         <provider

@@ -117,8 +117,25 @@ router.get('/locations', async (req, res) => {
 const RULE_TYPES = ['any', 'alphabetical_range', 'specific_sets', 'compound'];
 const GAME_RESTRICTIONS = ['any', 'pokemon', 'mtg'];
 
+// Binder page width in pockets. null (or '') means automatic: the client lays the
+// page out from its capacity. Capped at 12, wider than any common pocket page, so
+// a typo can't store a page drawn one microscopic row of 40 across. Throws on
+// anything else so the route answers 400 instead of storing it. The client's
+// picker (frontend/src/utils/binderLayout.js) offers the same range.
+const MAX_PAGE_COLUMNS = 12;
+function normalizePageColumns(value) {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  // Number(true) is 1; a boolean is a client bug, not a width.
+  const n = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > MAX_PAGE_COLUMNS) {
+    throw new Error(`page_columns must be a whole number from 1 to ${MAX_PAGE_COLUMNS}, or null for automatic`);
+  }
+  return n;
+}
+
 router.post('/locations', async (req, res) => {
-  const { name, type, sort_order = 'name-asc', foil_sorting = 'normals_first', rule_type = 'any', rule_config, compartmentPlan, game = 'any', fixed_slots } = req.body;
+  const { name, type, sort_order = 'name-asc', foil_sorting = 'normals_first', rule_type = 'any', rule_config, compartmentPlan, game = 'any', fixed_slots, page_columns } = req.body;
 
   if (!name || !type) {
     return res.status(400).json({ error: 'name and type are required' });
@@ -141,6 +158,12 @@ router.post('/locations', async (req, res) => {
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
+  let pageColumns;
+  try {
+    pageColumns = normalizePageColumns(page_columns) ?? null;
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
   try {
     const existing = await db.get(`SELECT id FROM locations WHERE name = ? AND user_id = ?`, [name, req.user.id]);
     if (existing) {
@@ -148,9 +171,9 @@ router.post('/locations', async (req, res) => {
     }
 
     const result = await db.run(`
-      INSERT INTO locations (name, type, sort_order, foil_sorting, rule_type, rule_config, game, fixed_slots, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [name, type, sort_order, foil_sorting || 'normals_first', rule_type, ruleConfigJson, game, fixedSlotsJson, req.user.id]);
+      INSERT INTO locations (name, type, sort_order, foil_sorting, rule_type, rule_config, game, fixed_slots, page_columns, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [name, type, sort_order, foil_sorting || 'normals_first', rule_type, ruleConfigJson, game, fixedSlotsJson, pageColumns, req.user.id]);
 
     const plan = compartmentPlan || defaultCompartmentPlan(type);
     await db.createCompartments(result.lastID, Math.max(1, parseInt(plan.count, 10) || 1), Math.max(1, parseInt(plan.capacity, 10) || 40));
@@ -176,7 +199,7 @@ router.get('/locations/:id', async (req, res) => {
 
 router.put('/locations/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, type, sort_order, foil_sorting, rule_type, rule_config, game, locked, allow_stacking, fixed_slots } = req.body;
+  const { name, type, sort_order, foil_sorting, rule_type, rule_config, game, locked, allow_stacking, fixed_slots, page_columns } = req.body;
   if (rule_type !== undefined && !RULE_TYPES.includes(rule_type)) {
     return res.status(400).json({ error: 'Invalid rule_type' });
   }
@@ -192,6 +215,12 @@ router.put('/locations/:id', async (req, res) => {
   let fixedSlotsJson;
   try {
     fixedSlotsJson = fixed_slots !== undefined ? normalizeFixedSlots(fixed_slots) : undefined;
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  let pageColumns;
+  try {
+    pageColumns = normalizePageColumns(page_columns);
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -239,6 +268,10 @@ router.put('/locations/:id', async (req, res) => {
     // Its own statement: null is how the client turns it off, which COALESCE can't express.
     if (fixedSlotsJson !== undefined) {
       await db.run(`UPDATE locations SET fixed_slots = ? WHERE id = ? AND user_id = ?`, [fixedSlotsJson, id, req.user.id]);
+    }
+    // Same reason: null puts the page back on the automatic layout.
+    if (pageColumns !== undefined) {
+      await db.run(`UPDATE locations SET page_columns = ? WHERE id = ? AND user_id = ?`, [pageColumns, id, req.user.id]);
     }
 
     let evicted = 0;
@@ -668,7 +701,10 @@ router.post('/locations/:id/recommend-batch', async (req, res) => {
         language: entry.language,
         name: entry.name,
         supertype: entry.supertype,
+        game: entry.game,
         types: JSON.stringify(entry.types),
+        // An MTG card's type sort reads its type line, which lives here.
+        subtypes: entry.subtypes,
         rarity: entry.rarity,
         set_name: entry.set_name,
         number: entry.number,
@@ -737,7 +773,7 @@ router.post('/locations/:id/resort', async (req, res) => {
 
     const cards = await db.all(`
       SELECT c.id as entry_id, c.card_id, c.printing, c.language, c.quantity, c.favorite, c.is_trade, c.list_type,
-             cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.rarity, cc.supertype, cc.image_url, cc.game,
+             cc.name, cc.printed_name, cc.set_id, cc.set_name, cc.number, cc.types, cc.subtypes, cc.rarity, cc.supertype, cc.image_url, cc.game,
              cc.price_trend, cc.price_normal, cc.price_holofoil, cc.price_reverse_holofoil, cc.cmc, cc.color_identity
       FROM collection c
       JOIN card_cache cc ON c.card_id = cc.id

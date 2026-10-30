@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, lazy, Suspense } from 'react';
 import { LayoutDashboard, Database, MapPin, Sparkles, Settings as SettingsIcon, LogOut, ShieldAlert, Plus, Swords, StickyNote, Package } from 'lucide-react';
 import Login from './components/Login';
 import Logo from './components/Logo';
+import { App as CapacitorApp } from '@capacitor/app';
 import { pushBackGuard } from './utils/useBackGuard';
 import { useT } from './utils/i18n';
+import { isNative } from './apiBase';
+import { parseOidcReturn, takeVerifier } from './utils/nativeOidc';
 
 // View components are code-split so heavy deps (recharts in the chart views)
 // load on demand instead of in the initial bundle.
@@ -63,7 +66,7 @@ const originalFetch = window.fetch;
 window.fetch = function (input, options = {}) {
   // `input` may be a string, a URL, or a Request object — normalize before using string methods.
   const url = typeof input === 'string' ? input : (input && input.url) || '';
-  const isPublicOrAuthRoute = url.includes('/api/shared/') || url.includes('/api/auth/login') || url.includes('/api/auth/register') || url.includes('/api/auth/bootstrap');
+  const isPublicOrAuthRoute = url.includes('/api/shared/') || url.includes('/api/auth/login') || url.includes('/api/auth/register') || url.includes('/api/auth/bootstrap') || url.includes('/api/auth/oidc/exchange');
 
   const token = localStorage.getItem('bindarr_token');
   const finalOptions = { ...options };
@@ -81,6 +84,13 @@ window.fetch = function (input, options = {}) {
     return response;
   });
 };
+
+// bindarr://oidc links already acted on. Module-level, not state: getLaunchUrl
+// keeps returning the link that cold-started the app for its whole lifetime, and
+// the effect that reads it re-runs. Without this, signing out and starting a new
+// SSO login would replay that old, spent code -- and burn the NEW login's verifier
+// on it.
+const handledOidcReturns = new Set();
 
 function App() {
   const { t } = useT();
@@ -171,6 +181,69 @@ function App() {
     } catch { /* ignore URL parse error */ }
   }, [t, token]);
 
+  // Native SSO return (issue #94). The login ran in the system browser; the
+  // server sends it back as bindarr://oidc?code=... (or ?oidc_error=...), either
+  // to the running app (appUrlOpen) or as the link that cold-started it
+  // (getLaunchUrl). The code is useless without the verifier Login.jsx stored, and
+  // with no verifier pending this app never started a login -- so the link is
+  // ignored rather than signing the user into whatever account it names.
+  useEffect(() => {
+    if (!isNative) return;
+    let cancelled = false;
+    let listener = null;
+
+    const handleUrl = (url) => {
+      const ret = parseOidcReturn(url);
+      // The launch URL and appUrlOpen can both report the same link.
+      if (!ret || handledOidcReturns.has(url)) return;
+      handledOidcReturns.add(url);
+      const verifier = takeVerifier();
+      if (!verifier) return;
+
+      if (ret.error) {
+        showToast(ret.error);
+        return;
+      }
+      fetch('/api/auth/oidc/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: ret.code, verifier })
+      })
+        .then(res => res.json().then(data => (res.ok ? data : Promise.reject(new Error(data.error || 'exchange failed')))))
+        .then(data => {
+          // Deliberately not gated on `cancelled`: the code and verifier are both
+          // spent by now, and on a cold start the locale finishing its load (a new
+          // `t`) re-runs this effect mid-request -- dropping the answer then would
+          // sign nobody in and leave nothing to retry with.
+          if (!data.token || !data.user) return;
+          // Same completion as handleLoginSuccess, inlined so this listener does
+          // not have to be re-registered on every render.
+          setToken(data.token);
+          setUser(data.user);
+          localStorage.setItem('bindarr_token', data.token);
+          localStorage.setItem('bindarr_user', JSON.stringify(data.user));
+          showToast(t('toast.welcomeBack', { name: data.user.username }));
+          setActiveTab('dashboard');
+        })
+        .catch(err => {
+          console.error('OIDC native exchange failed:', err);
+          showToast(t('login.errOidcFailed'));
+        });
+    };
+
+    CapacitorApp.addListener('appUrlOpen', (event) => handleUrl(event.url))
+      .then(handle => { if (cancelled) handle.remove(); else listener = handle; })
+      .catch(err => console.error('appUrlOpen listener failed:', err));
+    CapacitorApp.getLaunchUrl()
+      .then(launch => { if (!cancelled && launch && launch.url) handleUrl(launch.url); })
+      .catch(() => { /* no launch URL */ });
+
+    return () => {
+      cancelled = true;
+      if (listener) listener.remove();
+    };
+  }, [t]);
+
   useEffect(() => {
     if (toast) {
       const timer = setTimeout(() => {
@@ -179,6 +252,50 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [toast]);
+
+  // Fit the tab bar by measuring, not by breakpoint. How much room the tabs
+  // need depends on Android's system font scale (the WebView honours it), the
+  // language (German and Russian labels run long) and whether the admin tab is
+  // shown — no media query can see any of that. Each pass starts from the
+  // least compact state, so widening the window brings labels and the greeting
+  // back, then steps down only while something still doesn't fit:
+  //   .nav-tight on the header   -> greeting hidden (top bar only, index.css)
+  //   .nav-compact on the bar    -> icons only, except the active tab
+  //   .nav-tighter on the header -> "Bindarr" wordmark hidden, mark stays
+  //                                 (top bar only)
+  // and past that the bar's hidden-scrollbar overflow is the last resort.
+  // Layout effect + classList (no state): measured and settled before paint,
+  // so there is no flash and no re-render.
+  const navRef = useRef(null);
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const header = nav.closest('.app-header');
+    const fits = () => nav.scrollWidth <= nav.clientWidth + 1
+      && ![...nav.querySelectorAll('.nav-tab-label')].some(l => l.scrollWidth > l.clientWidth + 1);
+    const steps = [[header, 'nav-tight'], [nav, 'nav-compact'], [header, 'nav-tighter']];
+    const step = () => {
+      for (const [el, cls] of steps) el?.classList.remove(cls);
+      for (const [el, cls] of steps) {
+        if (fits()) return;
+        el?.classList.add(cls);
+      }
+    };
+    // Tabs transition their padding; .nav-measuring switches that off so each
+    // fits() reads the real size, and the settled layout is flushed before it
+    // is switched back on so nothing animates afterwards.
+    const check = () => {
+      nav.classList.add('nav-measuring');
+      step();
+      void nav.offsetWidth;
+      nav.classList.remove('nav-measuring');
+    };
+    check();
+    window.addEventListener('resize', check);
+    // Web fonts change label widths after first paint.
+    document.fonts?.ready.then(check).catch(() => {});
+    return () => window.removeEventListener('resize', check);
+  }, [token, user, activeTab, t]);
 
   // Offer first-run setup to an admin until it is finished or skipped. The flag
   // lives on the server, so closing the wizard halfway resumes it at the next
@@ -340,80 +457,101 @@ function App() {
           <h1 className="logo-text">Bind<span>arr</span></h1>
         </div>
 
-        {/* Navigation Tabs (Nested inside header for unified layout) */}
-        <nav className="nav-tabs" style={{ margin: 0 }}>
+        {/* Navigation Tabs (Nested inside header for unified layout). Each tab
+            carries its name as aria-label/title: on narrow screens, or when the
+            labels don't fit (navRef check above), the label span is hidden for
+            all but the active tab (index.css). */}
+        <nav ref={navRef} className="nav-tabs" style={{ margin: 0 }}>
           <button 
             className={`nav-tab ${activeTab === 'dashboard' ? 'active' : ''}`}
             onClick={() => goTab('dashboard')}
+            aria-label={t('nav.dashboard')}
+            title={t('nav.dashboard')}
           >
             <LayoutDashboard size={18} />
-            <span>{t('nav.dashboard')}</span>
+            <span className="nav-tab-label">{t('nav.dashboard')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'add-cards' ? 'active' : ''}`}
             onClick={() => goTab('add-cards')}
+            aria-label={t('nav.addCards')}
+            title={t('nav.addCards')}
           >
             <Plus size={18} />
-            <span>{t('nav.addCards')}</span>
+            <span className="nav-tab-label">{t('nav.addCards')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'collection' ? 'active' : ''}`}
             onClick={() => goTab('collection')}
+            aria-label={t('nav.collection')}
+            title={t('nav.collection')}
           >
             <Database size={18} />
-            <span>{t('nav.collection')}</span>
+            <span className="nav-tab-label">{t('nav.collection')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'storage' ? 'active' : ''}`}
             onClick={() => goTab('storage')}
+            aria-label={t('nav.storage')}
+            title={t('nav.storage')}
           >
             <MapPin size={18} />
-            <span>{t('nav.storage')}</span>
+            <span className="nav-tab-label">{t('nav.storage')}</span>
           </button>
           <button
             className={`nav-tab ${activeTab === 'deckbuilder' ? 'active' : ''}`}
             onClick={() => goTab('deckbuilder')}
+            aria-label={t('nav.deckBuilder')}
+            title={t('nav.deckBuilder')}
           >
             <Swords size={18} />
-            <span>{t('nav.deckBuilder')}</span>
+            <span className="nav-tab-label">{t('nav.deckBuilder')}</span>
           </button>
 
           <button
             className={`nav-tab ${activeTab === 'notes' ? 'active' : ''}`}
             onClick={() => goTab('notes')}
+            aria-label={t('nav.notes')}
+            title={t('nav.notes')}
           >
             <StickyNote size={18} />
-            <span>{t('nav.notes')}</span>
+            <span className="nav-tab-label">{t('nav.notes')}</span>
           </button>
 
           <button
             className={`nav-tab ${activeTab === 'sealed' ? 'active' : ''}`}
             onClick={() => goTab('sealed')}
+            aria-label={t('nav.sealed')}
+            title={t('nav.sealed')}
           >
             <Package size={18} />
-            <span>{t('nav.sealed')}</span>
+            <span className="nav-tab-label">{t('nav.sealed')}</span>
           </button>
 
           <button
             className={`nav-tab ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => goTab('settings')}
+            aria-label={t('nav.settings')}
+            title={t('nav.settings')}
           >
             <SettingsIcon size={18} />
-            <span>{t('nav.settings')}</span>
+            <span className="nav-tab-label">{t('nav.settings')}</span>
           </button>
           {user.role === 'admin' && (
             <button 
               className={`nav-tab ${activeTab === 'admin' ? 'active' : ''}`}
               onClick={() => goTab('admin')}
+              aria-label={t('nav.admin')}
+              title={t('nav.admin')}
             >
               <ShieldAlert size={18} style={{ color: 'var(--accent-red)' }} />
-              <span>{t('nav.admin')}</span>
+              <span className="nav-tab-label">{t('nav.admin')}</span>
             </button>
           )}
         </nav>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+        <div className="header-actions" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div className="header-greeting" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
             <Sparkles size={14} style={{ color: 'var(--accent-yellow)' }} />
             <span>{t('header.greeting')} <strong style={{ color: 'var(--text-strong)' }}>{user.username}</strong> ({t(`role.${user.role}`)})</span>
           </div>

@@ -349,7 +349,8 @@ function Dashboard({ statsTrigger, onNavigate, setSelectedLocationId, setFocusEn
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem' }}>
+          {/* minmax(0, …) for the same reason as .dashboard-details. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '1.5rem' }}>
             {/* Type Distribution Donut Chart */}
             <div className="glass-panel">
               <h3 className="chart-title">{t(gameFilter === 'mtg' ? 'dash.colorDistribution' : 'dash.typeDistribution')}</h3>

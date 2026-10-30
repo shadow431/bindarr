@@ -1563,11 +1563,19 @@ function DeckBuilder({ showToast }) {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem', alignItems: 'start' }}>
+          {/* Every level here opts out of min-width:auto (minmax(0, 1fr) on the
+              track, minWidth 0 on both columns). Without that, any row's
+              min-content (a nowrap warning, the search form) and each chart's
+              fixed-px svg width let the columns outgrow the page: on a phone
+              the deck list ran off the right edge, and tapping a "+" scrolled
+              the clipped page sideways, so the deck appeared to creep left as
+              copies were added (#89). The charts also could never shrink back
+              once they had measured wide. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '1.5rem', alignItems: 'start' }}>
             <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '1.5rem' }}>
-              
+
               {/* Left Column: Deck Card List */}
-              <div style={{ flex: '2 1 500px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div style={{ flex: '2 1 500px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                 
                 {/* Search & Quick Add to Deck */}
                 <div className="glass-panel">
@@ -1596,7 +1604,9 @@ function DeckBuilder({ showToast }) {
                       placeholder={t('deck.searchPlaceholder')}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      style={{ flex: 1 }}
+                      // An input's intrinsic width (~20 chars) is otherwise its
+                      // flex minimum, which pushed Browse past a phone's edge.
+                      style={{ flex: 1, minWidth: 0 }}
                     />
                     <button type="submit" className="btn btn-primary" style={{ padding: '0.5rem 1rem' }} title={t('shared.search')}>
                       <Search size={16} />
@@ -1697,8 +1707,11 @@ function DeckBuilder({ showToast }) {
                           {cardDisplayMode === 'list' && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                               {list.map(card => (
-                                <div key={card.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: card.quantity > (card.owned_qty || 0) - (card.locked_qty || 0) ? 'rgba(127,29,29,0.16)' : 'rgba(255,255,255,0.01)', borderRadius: 'var(--radius-sm)', border: card.quantity > (card.owned_qty || 0) - (card.locked_qty || 0) ? '1px solid var(--accent-red)' : '1px solid var(--border-glass)', gap: '0.6rem' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', minWidth: 0, flex: 1 }} onClick={() => setPreviewCard(card)}>
+                                // Wraps so a wide warning drops the controls to their own
+                                // line instead of squeezing the name to nothing; the
+                                // name's 10rem basis is what decides when to wrap.
+                                <div key={card.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', background: card.quantity > (card.owned_qty || 0) - (card.locked_qty || 0) ? 'rgba(127,29,29,0.16)' : 'rgba(255,255,255,0.01)', borderRadius: 'var(--radius-sm)', border: card.quantity > (card.owned_qty || 0) - (card.locked_qty || 0) ? '1px solid var(--accent-red)' : '1px solid var(--border-glass)', gap: '0.6rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', minWidth: 0, flex: '1 1 10rem' }} onClick={() => setPreviewCard(card)}>
                                     <CardImage card={card} style={{ width: '32px', height: '44px', objectFit: 'cover', borderRadius: '2px', flexShrink: 0 }} />
                                     <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
                                       <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-strong)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(card)}</div>
@@ -1711,13 +1724,17 @@ function DeckBuilder({ showToast }) {
                                     </div>
                                   </div>
 
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+                                  {/* The warning names every checked-out deck holding the
+                                      card, so it is unbounded: it truncates (full text in
+                                      the tooltip) rather than setting the row's width. */}
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', minWidth: 0, marginLeft: 'auto' }}>
                                     {card.quantity > (card.owned_qty || 0) - (card.locked_qty || 0) && (
-                                      <span style={{ color: 'var(--accent-red)', fontSize: '0.7rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '3px', whiteSpace: 'nowrap' }} title={card.locked_decks || t('deck.unavailableCopies', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)) })}>
-                                        <AlertTriangle size={13} /> {card.locked_decks ? t('deck.unavailableCopiesInDecks', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)), decks: card.locked_decks }) : t('deck.unavailableCopies', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)) })}
+                                      <span style={{ color: 'var(--accent-red)', fontSize: '0.7rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '3px', minWidth: 0, maxWidth: '14rem' }} title={card.locked_decks ? t('deck.unavailableCopiesInDecks', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)), decks: card.locked_decks }) : t('deck.unavailableCopies', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)) })}>
+                                        <AlertTriangle size={13} style={{ flexShrink: 0 }} />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.locked_decks ? t('deck.unavailableCopiesInDecks', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)), decks: card.locked_decks }) : t('deck.unavailableCopies', { count: card.quantity - ((card.owned_qty || 0) - (card.locked_qty || 0)) })}</span>
                                       </span>
                                     )}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '4px', border: '1px solid var(--border-glass)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '4px', border: '1px solid var(--border-glass)', flexShrink: 0 }}>
                                       <button
                                         className={`btn ${card.quantity === 1 ? 'btn-danger' : 'btn-secondary'} btn-icon-only`}
                                         style={{ width: '22px', height: '22px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -1785,7 +1802,7 @@ function DeckBuilder({ showToast }) {
               </div>
 
               {/* Right Column: Statistics, Mana Curve & Deck Health */}
-              <div style={{ flex: '1 1 320px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div style={{ flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                 
                 {/* Deck Health & Summary Status */}
                 <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

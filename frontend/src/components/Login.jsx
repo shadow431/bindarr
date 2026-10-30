@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { User, Lock, ArrowRight, Eye, EyeOff, Server, Shield } from 'lucide-react';
 import { isNative, getServerUrl, setServerUrl } from '../apiBase';
 import { useT } from '../utils/i18n';
+import { getOrCreateVerifier, challengeFor } from '../utils/nativeOidc';
 import Logo from './Logo';
 
 // Must match OWNER_USERNAME in backend/src/routes/auth.js — the bootstrap route
@@ -39,6 +40,26 @@ function Login({ onLoginSuccess }) {
   // OIDC / SSO status
   const [oidcEnabled, setOidcEnabled] = useState(false);
   const [oidcProviderName, setOidcProviderName] = useState('Single Sign-On');
+  // Native only: the S256 challenge for this device's pending SSO verifier. The
+  // login opens in the system browser and comes back through bindarr://oidc,
+  // where App.jsx redeems the one-time code with the verifier (utils/nativeOidc).
+  const [oidcChallenge, setOidcChallenge] = useState('');
+
+  useEffect(() => {
+    if (!isNative || !oidcEnabled) return;
+    let cancelled = false;
+    challengeFor(getOrCreateVerifier())
+      .then(c => { if (!cancelled) setOidcChallenge(c); })
+      .catch(err => console.error('Could not prepare SSO challenge:', err));
+    return () => { cancelled = true; };
+  }, [oidcEnabled]);
+
+  // Web: same-origin, and the callback lands back on this page. Native: the
+  // user's own server, flagged so its callback returns to the app instead.
+  const oidcHref = !isNative ? '/api/auth/oidc/login'
+    : server && oidcChallenge
+      ? `${server.replace(/\/+$/, '')}/api/auth/oidc/login?client=native&challenge=${oidcChallenge}`
+      : undefined;
 
   useEffect(() => {
     if (isNative && !server) return; // wait until user sets their server URL
@@ -196,7 +217,8 @@ function Login({ onLoginSuccess }) {
         {oidcEnabled && !setupRequired && !isRegister && (
           <div style={{ marginBottom: '1.25rem' }}>
             <a
-              href={(isNative && server ? server.replace(/\/+$/, '') : '') + '/api/auth/oidc/login'}
+              href={oidcHref}
+              aria-disabled={!oidcHref}
               className="btn"
               style={{
                 display: 'flex',

@@ -11,6 +11,7 @@ import { displayName } from '../utils/languages';
 import CompartmentView, { FocusedCardInfo } from './CompartmentView';
 import { SortBuilder, FilterBuilder } from './SortFilterBuilder';
 import CreateContainerModal from './CreateContainerModal';
+import PageColumnsSelect from './PageColumnsSelect';
 import CardImage from './CardImage';
 import { useBackGuard } from '../utils/useBackGuard';
 import { useT } from '../utils/i18n';
@@ -92,6 +93,8 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
   const [capacityDraft, setCapacityDraft] = useState('');
   const [countDraft, setCountDraft] = useState('');
   const [stackingDraft, setStackingDraft] = useState(false);
+  // Binder page width in pockets: '' = automatic (from the page capacity).
+  const [columnsDraft, setColumnsDraft] = useState('');
   // Fixed slots by collector number: null = off, else rows of { set_id, start_slot, max_number }.
   const [fixedDraft, setFixedDraft] = useState(null);
 
@@ -1034,6 +1037,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
       allow_stacking: stackingDraft,
       fixed_slots: fixedSlots,
     };
+    if (isBinderType) fields.page_columns = columnsDraft === '' ? null : parseInt(columnsDraft, 10);
     const trimmedName = (nameDraft || '').trim();
     if (trimmedName && trimmedName !== selectedLoc.name) fields.name = trimmedName;
 
@@ -1189,6 +1193,20 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
                 />
               </label>
             </div>
+
+            {/* Binders only: a box row is a coverflow, it has no pocket grid. */}
+            {isBinderType && (
+              <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                {t('loc.pageColumns')}
+                <PageColumnsSelect
+                  value={columnsDraft}
+                  onChange={setColumnsDraft}
+                  capacity={capacityDraft}
+                  style={{ padding: '0.35rem 0.5rem', fontSize: '0.85rem' }}
+                />
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem', lineHeight: 1.35 }}>{t('loc.pageColumnsHint')}</span>
+              </label>
+            )}
 
             {/* Binders only: a box row shows its cards in a coverflow, where a
                 shared slot has nothing to show — the pocket grid is what makes a
@@ -1469,6 +1487,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
 
                     setNameDraft(selectedLoc.name || '');
                     setStackingDraft(!!selectedLoc.allow_stacking);
+                    setColumnsDraft(selectedLoc.page_columns ? String(selectedLoc.page_columns) : '');
                     let fixed = null;
                     try { fixed = selectedLoc.fixed_slots ? JSON.parse(selectedLoc.fixed_slots) : null; } catch { /* ignore */ }
                     setFixedDraft(Array.isArray(fixed) && fixed.length > 0 ? fixed.map(r => ({ ...r, max_number: r.max_number ?? '' })) : null);
@@ -1629,6 +1648,7 @@ function LocationManager({ statsTrigger, onUpdate, showToast, selectedLocationId
                   compartment: c,
                   cards: cardsByCompartment.get(c.id) || [],
                   allowStacking: !!selectedLoc.allow_stacking,
+                  pageColumns: selectedLoc.page_columns,
                   sortOrder: selectedLoc.sort_order,
                   setsList,
                   canRemove: i === compartments.length - 1 && compartments.length > 1 && (cardsByCompartment.get(c.id) || []).length === 0,

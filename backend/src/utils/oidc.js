@@ -296,10 +296,25 @@ function verifyStateToken(token) {
   }
 }
 
+// A PKCE S256 challenge: base64url of a SHA-256, so exactly 43 characters. The
+// native app sends one with client=native; anything else is refused rather than
+// sealed into the state, because a malformed challenge can never be met later
+// and the login would fail at the very last step instead of the first.
+const NATIVE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
+
+function isValidNativeChallenge(challenge) {
+  return typeof challenge === 'string' && NATIVE_CHALLENGE_RE.test(challenge);
+}
+
 /**
  * Build the full IdP authorization URL.
+ *
+ * `nativeChallenge` marks a login started by the Android/iOS app. It rides in
+ * the signed state token (nat/nc) so the callback knows to hand off to the app
+ * via bindarr://oidc instead of the web page -- and because the state is HMAC'd,
+ * nobody can flip a web login into a native one, or swap the challenge, in transit.
  */
-async function buildAuthorizationUrl(req) {
+async function buildAuthorizationUrl(req, { nativeChallenge } = {}) {
   const discovery = await getDiscovery();
   const clientId = getClientId();
   if (!clientId) {
@@ -310,10 +325,15 @@ async function buildAuthorizationUrl(req) {
   const nonce = crypto.randomBytes(16).toString('hex');
   const redirectUri = resolveRedirectUri(req);
 
+  if (nativeChallenge !== undefined && !isValidNativeChallenge(nativeChallenge)) {
+    throw new Error('Invalid native app challenge.');
+  }
+
   const stateToken = createStateToken({
     cv: codeVerifier,
     n: nonce,
-    ru: redirectUri
+    ru: redirectUri,
+    ...(nativeChallenge ? { nat: 1, nc: nativeChallenge } : {})
   });
 
   const url = new URL(discovery.authorization_endpoint);
@@ -444,8 +464,66 @@ async function exchangeCode({ code, stateToken, req }) {
   return {
     tokens,
     claims: mergedClaims,
-    extracted: extractUserIdentity(mergedClaims)
+    extracted: extractUserIdentity(mergedClaims),
+    // The verified state, so the callback can tell a native-app login (nat/nc)
+    // from a web one without decoding the token a second time.
+    state: stateData
   };
+}
+
+// ---------------------------------------------------------------------------
+// Native-app hand-off (issue #94).
+//
+// The app opens the login in the system browser (RFC 8252: an embedded WebView
+// would see the user's IdP password), so the session is minted in a browser the
+// app cannot read. The callback gets back into the app through the bindarr://
+// custom scheme -- but any app on the device can register that same scheme, so
+// whatever travels through it must be useless on its own:
+//
+//   - never the session token: a single-use code, valid for a minute, instead;
+//   - and the code is bound to a PKCE-style challenge the app sent at the start.
+//     Only the SHA-256 of the app's secret verifier ever left the app, so an
+//     app that intercepts bindarr://oidc?code=... holds a code it cannot redeem.
+//     The same binding stops login CSRF: a code minted for someone else's login
+//     carries someone else's challenge.
+//
+// In memory, not SQLite: Bindarr is one process, a code lives for sixty seconds,
+// and a restart in between costs nothing worse than tapping the SSO button again.
+// ---------------------------------------------------------------------------
+const NATIVE_CODE_TTL_MS = 60 * 1000;
+const nativeCodes = new Map();
+
+function pruneNativeCodes(now) {
+  for (const [code, entry] of nativeCodes) {
+    if (entry.expiresAt <= now) nativeCodes.delete(code);
+  }
+}
+
+function issueNativeCode(userId, challenge, now = Date.now()) {
+  if (!isValidNativeChallenge(challenge)) {
+    throw new Error('Invalid native app challenge.');
+  }
+  pruneNativeCodes(now);
+  const code = crypto.randomBytes(32).toString('base64url');
+  nativeCodes.set(code, { userId, challenge, expiresAt: now + NATIVE_CODE_TTL_MS });
+  return code;
+}
+
+// Returns the user id the code was minted for, or null. A code is deleted on its
+// FIRST presentation, whatever the outcome: a wrong verifier burns it too, so it
+// cannot be retried, and a replay of a code that already worked finds nothing.
+function consumeNativeCode(code, verifier, now = Date.now()) {
+  if (typeof code !== 'string' || !code) return null;
+  const entry = nativeCodes.get(code);
+  if (!entry) return null;
+  nativeCodes.delete(code);
+  if (entry.expiresAt <= now) return null;
+  if (typeof verifier !== 'string' || !verifier) return null;
+
+  const expected = Buffer.from(entry.challenge, 'utf8');
+  const actual = Buffer.from(crypto.createHash('sha256').update(verifier).digest('base64url'), 'utf8');
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return null;
+  return entry.userId;
 }
 
 /**
@@ -502,5 +580,9 @@ module.exports = {
   extractUserIdentity,
   resolveRedirectUri,
   describeFetchError,
+  isValidNativeChallenge,
+  issueNativeCode,
+  consumeNativeCode,
+  NATIVE_CODE_TTL_MS,
   _resetDiscoveryCache: () => { discoveryCache = null; discoveryExpiresAt = 0; }
 };

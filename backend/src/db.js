@@ -613,6 +613,17 @@ async function initDb() {
     await run(`ALTER TABLE app_settings ADD COLUMN setup_complete INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Which marketplace Magic prices are read from first (#93). Scryfall quotes both
+  // TCGplayer (`usd`) and Cardmarket (`eur`) for most printings; 'tcgplayer' is
+  // what every install did before this column existed, so it is the default and
+  // nothing changes for anyone who never touches it. 'cardmarket' is the mirror
+  // image for European collectors, whose collections otherwise came out as a mix
+  // of $ and € that the dashboard summed as one number. See
+  // scryfallApi.normalizeCard for how the choice is applied.
+  if (!appSettingsCols.some(c => c.name === 'mtg_price_source')) {
+    await run(`ALTER TABLE app_settings ADD COLUMN mtg_price_source TEXT NOT NULL DEFAULT 'tcgplayer'`);
+  }
+
   // A non-English printing is its own card, not a display variant of the English
   // one: it has its own provider id, its own art and its own name. `language`
   // records which printing a cached row IS (collection.language still records
@@ -667,6 +678,28 @@ async function initDb() {
     await run(`UPDATE card_cache SET price_source = 'scryfall', price_currency = 'USD' WHERE id LIKE 'mtg-%'`);
     await run(`UPDATE card_cache SET price_source = 'tcgdex', price_currency = 'EUR' WHERE id LIKE 'tcgdex-%'`);
     await run(`UPDATE card_cache SET price_source = 'pokemontcg', price_currency = 'USD' WHERE price_source IS NULL AND game = 'pokemon'`);
+  }
+
+  // The currency each price point was recorded in. A card's currency can change
+  // under it — an admin switching the MTG price source (#93), or a printing that
+  // gains or loses its TCGplayer listing — and price_history only held a bare
+  // number, so a $10 card re-priced at €9 would have read as a 10% drop. Readers
+  // compare points against the card's CURRENT currency (routes/stats.js), so a
+  // switch starts a new series instead of drawing a fake move.
+  //
+  // Backfilled from card_cache once, on migration, and placed after the
+  // price_currency migration above so that column is guaranteed to exist. Until
+  // now a card's currency only moved in the rare USD/EUR fallback case, so its
+  // current currency is what its history was recorded in for all but a handful
+  // of points.
+  const priceHistoryCols = await all(`PRAGMA table_info(price_history)`);
+  if (!priceHistoryCols.some(c => c.name === 'currency')) {
+    await run(`ALTER TABLE price_history ADD COLUMN currency TEXT`);
+    await run(`
+      UPDATE price_history
+         SET currency = (SELECT price_currency FROM card_cache WHERE card_cache.id = price_history.card_id)
+       WHERE currency IS NULL
+    `);
   }
   if (!cardCacheCols.some(c => c.name === 'tcgplayer_product_id')) {
     await run(`ALTER TABLE card_cache ADD COLUMN tcgplayer_product_id INTEGER`);
@@ -940,6 +973,14 @@ async function initDb() {
   // to the binder pocket their collector number names. NULL (the default) is off.
   if (!locationsStackCols.some(c => c.name === 'fixed_slots')) {
     await run(`ALTER TABLE locations ADD COLUMN fixed_slots TEXT`);
+  }
+
+  // Page columns: how many pockets wide a binder page is drawn. NULL (the
+  // default) lets the client pick from the page's capacity; a number overrides
+  // that for pages the standard layouts don't cover, e.g. a 12-pocket page that
+  // really is 3 wide.
+  if (!locationsStackCols.some(c => c.name === 'page_columns')) {
+    await run(`ALTER TABLE locations ADD COLUMN page_columns INTEGER`);
   }
 
   await splitStackedRows();

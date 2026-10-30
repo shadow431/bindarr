@@ -18,7 +18,8 @@ import MultiSelectDropdown from './MultiSelectDropdown';
 const labelStyle = { fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.03em' };
 
 // Maps each Sort By option to sortCardsByOrder criteria so ordering matches the
-// storage engine (set = chronological via setsList, type = POKEMON_TYPE_ORDER).
+// storage engine (set = chronological via setsList, type = POKEMON_TYPE_ORDER or
+// the MTG card-type order, color = WUBRG).
 // 'qty-desc' isn't a card-order scheme, handled separately.
 const SORT_CRITERIA = {
   'added-newest': [{ by: 'added_at', dir: 'desc' }, { by: 'entry_id', dir: 'desc' }],
@@ -31,7 +32,11 @@ const SORT_CRITERIA = {
   'number-asc': [{ by: 'number', dir: 'asc' }, { by: 'name', dir: 'asc' }],
   'rarity-desc': [{ by: 'rarity', dir: 'desc' }, { by: 'name', dir: 'asc' }],
   'rarity-asc': [{ by: 'rarity', dir: 'asc' }, { by: 'name', dir: 'asc' }],
+  // Magic: card type (Creature, Instant, Land...); Pokémon: energy type.
   'type-asc': [{ by: 'type', dir: 'asc' }, { by: 'name', dir: 'asc' }],
+  // Colour identity in WUBRG order, then Multicolor, then Colorless — the
+  // storage engine's colour buckets. 'type' stopped meaning colour for Magic (#88).
+  'color-asc': [{ by: 'color', dir: 'asc' }, { by: 'name', dir: 'asc' }],
   'language-asc': [{ by: 'language', dir: 'asc' }, { by: 'name', dir: 'asc' }],
   'favorite-first': [{ by: 'favorite', dir: 'desc' }, { by: 'added_at', dir: 'desc' }],
 };
@@ -436,7 +441,7 @@ function CollectionList({ statsTrigger, onUpdate, showToast, selectedCardFilter,
 
           <Field label={t('collection.sortBy')}>
             <select className="select-control" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-              {['added-newest', 'added-oldest', 'name-asc', 'name-desc', 'price-desc', 'price-asc', 'qty-desc', 'set-asc', 'number-asc', 'type-asc', 'rarity-desc', 'rarity-asc', 'language-asc', 'favorite-first']
+              {['added-newest', 'added-oldest', 'name-asc', 'name-desc', 'price-desc', 'price-asc', 'qty-desc', 'set-asc', 'number-asc', 'type-asc', 'color-asc', 'rarity-desc', 'rarity-asc', 'language-asc', 'favorite-first']
                 .map(key => <option key={key} value={key}>{t(`collection.sort.${key}`)}</option>)}
             </select>
           </Field>

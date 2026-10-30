@@ -53,17 +53,19 @@ async function runTests() {
     throw err;
   }
 
-  // F2-TC3: Verify that MTG cards are sorted in WUBRG sequence
+  // F2-TC3: Verify that MTG cards are sorted in WUBRG sequence by the colour
+  // sort. (The 'type' sort used to do this too; since #88 it sorts Magic by card
+  // type, which F2-TC7 covers.)
   try {
     const cards = [
-      { name: 'Mountain', types: ['Red'], game: 'mtg' },
-      { name: 'Forest', types: ['Green'], game: 'mtg' },
-      { name: 'Island', types: ['Blue'], game: 'mtg' },
-      { name: 'Plains', types: ['White'], game: 'mtg' },
-      { name: 'Swamp', types: ['Black'], game: 'mtg' }
+      { name: 'Mountain', types: ['Red'], color_identity: ['R'], game: 'mtg' },
+      { name: 'Forest', types: ['Green'], color_identity: ['G'], game: 'mtg' },
+      { name: 'Island', types: ['Blue'], color_identity: ['U'], game: 'mtg' },
+      { name: 'Plains', types: ['White'], color_identity: ['W'], game: 'mtg' },
+      { name: 'Swamp', types: ['Black'], color_identity: ['B'], game: 'mtg' }
     ];
     // WUBRG: White -> Blue -> Black -> Red -> Green
-    const sorted = compartmentSort.sortCards(cards, 'type-name', 'normals_first');
+    const sorted = compartmentSort.sortCards(cards, [{ by: 'color', dir: 'asc' }], 'normals_first');
     const colorsSorted = sorted.map(c => c.types[0]);
     assert.deepStrictEqual(colorsSorted, ['White', 'Blue', 'Black', 'Red', 'Green'], 'MTG cards must sort in WUBRG order');
     console.log('PASS: F2-TC3');
@@ -145,20 +147,24 @@ async function runTests() {
     throw err;
   }
 
-  // F2-TC7: Verify multicolor cards sorting order
+  // F2-TC7: Verify multicolor cards sorting order under the colour sort, and
+  // that the 'type' sort orders Magic by card type, not colour (#88)
   try {
     const cards = [
-      { name: 'Azorius Card', types: ['White', 'Blue'], game: 'mtg' },
-      { name: 'Island', types: ['Blue'], game: 'mtg' },
-      { name: 'Boros Card', types: ['Red', 'White'], game: 'mtg' },
-      { name: 'Plains', types: ['White'], game: 'mtg' }
+      { name: 'Azorius Card', types: ['White', 'Blue'], color_identity: ['W', 'U'], subtypes: ['Instant'], game: 'mtg' },
+      { name: 'Island', types: [], color_identity: ['U'], subtypes: ['Basic', 'Land', 'Island'], game: 'mtg' },
+      { name: 'Boros Card', types: ['Red', 'White'], color_identity: ['R', 'W'], subtypes: ['Creature', 'Human', 'Soldier'], game: 'mtg' },
+      { name: 'Plains', types: [], color_identity: ['W'], subtypes: ['Basic', 'Land', 'Plains'], game: 'mtg' }
     ];
-    const sorted = compartmentSort.sortCards(cards, 'type-name', 'normals_first');
+    const sorted = compartmentSort.sortCards(cards, [{ by: 'color', dir: 'asc' }, { by: 'name', dir: 'asc' }], 'normals_first');
     // Expected order: Plains (White) -> Island (Blue) -> Azorius Card (Multicolor) -> Boros Card (Multicolor)
     assert.strictEqual(sorted[0].name, 'Plains');
     assert.strictEqual(sorted[1].name, 'Island');
     assert.strictEqual(sorted[2].name, 'Azorius Card');
     assert.strictEqual(sorted[3].name, 'Boros Card');
+    const byType = compartmentSort.sortCards(cards, 'type-name', 'normals_first');
+    // Creature -> Instant -> Land, by name within a type
+    assert.deepStrictEqual(byType.map(c => c.name), ['Boros Card', 'Azorius Card', 'Island', 'Plains']);
     console.log('PASS: F2-TC7');
   } catch (err) {
     console.error('FAIL: F2-TC7 -', err.message);

@@ -1,4 +1,4 @@
-import { getRarityRank } from './cardRarity';
+import { getRarityRank } from './cardRarity.js';
 import cardOrder from '../../../shared/cardOrder.json';
 import sortSchemes from '../../../shared/sortSchemes.json';
 
@@ -9,11 +9,62 @@ import sortSchemes from '../../../shared/sortSchemes.json';
 // the backend filing engine (compartmentSort.js) exactly.
 export const POKEMON_TYPE_ORDER = cardOrder.pokemonType;
 
+export const MTG_CARD_TYPE_ORDER = cardOrder.mtgCardType;
+
 // Mirrors typeCategory in the backend: multi-color MTG cards bucket together.
 export function typeCategory(types) {
   const t = Array.isArray(types) ? types : [];
   if (t.length > 1) return 'Multicolor';
   return t[0] || 'Colorless';
+}
+
+function asList(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string' && value.startsWith('[')) {
+    try { const p = JSON.parse(value); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
+// `types` holds colours for an MTG card (the deck colour charts read it that
+// way), so the card's type line — split into words in `subtypes` — is what a
+// "type" sort has to read instead. `supertype` is the fallback for rows that
+// were selected without the game column.
+export function isMtgCard(card) {
+  return !!card && (card.game === 'mtg' || card.supertype === 'MTG');
+}
+
+// One card-type category per MTG card; see shared/cardOrder.json for why the
+// pick order is what it is. Mirrors mtgTypeCategory in the backend.
+export function mtgTypeCategory(subtypes) {
+  const words = new Set(asList(subtypes).map(w => String(w).toLowerCase()));
+  return cardOrder.mtgCardTypePick.find(type => words.has(type.toLowerCase())) || 'Other';
+}
+
+// The category a card sorts and groups under for the 'type' field: card type
+// for Magic, the type/ink list as before for Pokémon and Lorcana.
+export function cardTypeCategory(card) {
+  if (isMtgCard(card)) return mtgTypeCategory(card.subtypes);
+  return typeCategory(asList(card && card.types));
+}
+
+const COLOR_NAMES = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' };
+
+// Colour-identity bucket: one colour, Multicolor or Colorless. Mirrors
+// getColorCategory in the backend, so a colour sort shown here lines up with
+// how storage files by colour (WUBRG, then Multicolor, then Colorless).
+export function colorCategory(card) {
+  const raw = card && card.color_identity;
+  let ci = asList(raw);
+  if (ci.length === 0 && typeof raw === 'string' && raw && !raw.startsWith('[')) ci = [raw];
+  if (ci.length === 0) return 'Colorless';
+  if (ci.length > 1) return 'Multicolor';
+  return COLOR_NAMES[ci[0]] || ci[0] || 'Colorless';
+}
+
+function typeRank(card) {
+  const order = isMtgCard(card) ? MTG_CARD_TYPE_ORDER : POKEMON_TYPE_ORDER;
+  return order[cardTypeCategory(card)] || 50;
 }
 
 export function getPrintingRank(printing, foilSorting) {
@@ -93,12 +144,9 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           cmp = printA - printB;
           break;
         }
-        case 'type': {
-          const orderA = POKEMON_TYPE_ORDER[typeCategory(a.types)] || 50;
-          const orderB = POKEMON_TYPE_ORDER[typeCategory(b.types)] || 50;
-          cmp = orderA - orderB;
+        case 'type':
+          cmp = typeRank(a) - typeRank(b);
           break;
-        }
         case 'language': {
           const la = LANGUAGE_ORDER[a.language] || 99;
           const lb = LANGUAGE_ORDER[b.language] || 99;
@@ -110,18 +158,10 @@ export function sortCardsByOrder(cards, sortOrder, foilSorting, setsList = []) {
           break;
         case 'color_identity':
         case 'color': {
-          let cA = 'Colorless';
-          if (typeof a.color_identity === 'string') {
-            try { const p = JSON.parse(a.color_identity); if (p.length > 0) cA = p[0]; } catch { /* ignore */ }
-          } else if (Array.isArray(a.color_identity) && a.color_identity.length > 0) {
-            cA = a.color_identity[0];
-          }
-          let cB = 'Colorless';
-          if (typeof b.color_identity === 'string') {
-            try { const p = JSON.parse(b.color_identity); if (p.length > 0) cB = p[0]; } catch { /* ignore */ }
-          } else if (Array.isArray(b.color_identity) && b.color_identity.length > 0) {
-            cB = b.color_identity[0];
-          }
+          // Bucketed the way the backend files (a Boros card is Multicolor, not
+          // Red); this used to take the first colour of the identity.
+          const cA = colorCategory(a);
+          const cB = colorCategory(b);
           cmp = (cardOrder.wubrg[cA] || 99) - (cardOrder.wubrg[cB] || 99);
           if (cmp === 0) cmp = cA.localeCompare(cB);
           break;
